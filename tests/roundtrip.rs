@@ -220,6 +220,60 @@ fn heavy_motion_survives_rate_control() {
     assert!(p > 22.0, "PSNR luma trop bas sous charge : {p:.1} dB");
 }
 
+/// Régression : du mouvement sur la toute dernière ligne codée du flux
+/// (image rangée 285 → champ 2, ligne 142) ne doit pas être avalé par le
+/// bourrage de fin de flux. Si la dernière ligne se termine sur des codes VLC
+/// laissant moins de 12 bits avant le bourrage à zéro, le décodeur les
+/// prenait pour un mot de synchro et abandonnait la ligne, désynchronisant la
+/// dernière image. On balaie plusieurs longueurs : sans le correctif, au moins
+/// l'une d'elles tombe sur cet alignement.
+#[test]
+fn final_line_motion_survives_padding() {
+    let (w, h) = (256, 286);
+    let make = |t: usize| {
+        let mut f = Frame444::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                f.y[y * w + x] = (40 + (x / 3) % 60) as u8;
+                f.cb[y * w + x] = 120;
+                f.cr[y * w + x] = 130;
+            }
+        }
+        // Damier mobile sur les trois dernières rangées (dont la 285).
+        for y in (h - 3)..h {
+            for x in 0..w {
+                let on = ((x + t * 7) / 9) % 2 == 0;
+                f.y[y * w + x] = if on { 210 } else { 28 };
+                f.cr[y * w + x] = if on { 180 } else { 80 };
+            }
+        }
+        f
+    };
+    for n in 3..=12 {
+        let mut enc = Encoder::new(EncoderConfig { bitrate: 1_200_000, mono: false });
+        for t in 0..n {
+            enc.encode_frame(&make(t));
+        }
+        // Ce contenu reste à un débit modéré : aucune omission de champ.
+        assert!(!enc.has_pending_interpolation(), "n={n}");
+        let snap = enc.stores().clone();
+        let data = enc.finish();
+
+        let mut dec = Decoder::new(&data);
+        let mut last = None;
+        while let Some(fields) = dec.next_frame().expect("décodage") {
+            last = Some(fields);
+        }
+        let fields = last.unwrap_or_else(|| panic!("aucune image décodée (n={n})"));
+        for f in 0..2 {
+            assert!(
+                stores_equal(&fields[f], &snap[f]),
+                "désync sur la dernière image (n={n}, champ {f})"
+            );
+        }
+    }
+}
+
 /// Le flux doit se décoder à l'identique même tronqué proprement à une
 /// frontière d'image (robustesse du parseur en fin de flux).
 #[test]

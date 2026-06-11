@@ -5,7 +5,7 @@
 //! (§1.5.5), DPCM (§1.4.1.3), sous-échantillonnages (§1.4.1.4).
 
 use super::bitio::BitReader;
-use super::tables::{self, Vlc};
+use super::tables::{self, Vlc, VlcRead};
 use super::{
     BLANKING, CHROMA_ADDR_BASE, CHROMA_WIDTH, FieldStore, LINES_PER_FIELD, WIDTH, clamp_c,
     clamp_y, d_value, interpolate_omitted_field, predict_luma, spec_line_number,
@@ -375,8 +375,10 @@ impl<'a> Decoder<'a> {
             if self.at_sync() {
                 return Ok(Some(EndInfo { span_end: last, kind: ClusterEnd::Sync }));
             }
-            let Some(sym) = tables::read_vlc(&mut self.r, subsampled) else {
-                return Ok(None);
+            let sym = match tables::read_vlc(&mut self.r, subsampled) {
+                VlcRead::Sym(s) => s,
+                VlcRead::Eof => return Ok(None),
+                VlcRead::Invalid => bail!("code VLC luma invalide au bit {}", self.r.bit_pos()),
             };
             match sym {
                 Vlc::Eoc => {
@@ -438,8 +440,10 @@ impl<'a> Decoder<'a> {
             if self.at_sync() {
                 return Ok(Some(EndInfo { span_end: last, kind: ClusterEnd::Sync }));
             }
-            let Some(sym) = tables::read_vlc(&mut self.r, subsampled) else {
-                return Ok(None);
+            let sym = match tables::read_vlc(&mut self.r, subsampled) {
+                VlcRead::Sym(s) => s,
+                VlcRead::Eof => return Ok(None),
+                VlcRead::Invalid => bail!("code VLC chroma invalide au bit {}", self.r.bit_pos()),
             };
             match sym {
                 Vlc::Eoc => {
@@ -507,10 +511,19 @@ impl<'a> Decoder<'a> {
 
     /// Vrai si la position courante est un code de synchronisation
     /// (≥ 12 zéros : aucun code VLC ni valeur PCM légale ne commence ainsi).
+    ///
+    /// En fin de flux il reste moins de 12 bits : ce sont soit les derniers
+    /// codes VLC de la dernière ligne, soit le bourrage de `BitWriter::finish`
+    /// (≤ 7 zéros). Un vrai mot de synchro ne tient pas dans ce reliquat, donc
+    /// on ne le considère terminé que si tous les bits restants sont nuls
+    /// (bourrage) ; sinon un code reste à lire et il ne faut pas l'abandonner.
     fn at_sync(&mut self) -> bool {
         match self.r.peek_bits(12) {
             Some(v) => v == 0,
-            None => true,
+            None => {
+                let rem = self.r.remaining() as u8;
+                self.r.peek_bits(rem) == Some(0)
+            }
         }
     }
 }

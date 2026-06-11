@@ -22,6 +22,18 @@ pub enum Vlc {
     Eoc,
 }
 
+/// Résultat de la lecture d'un code VLC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VlcRead {
+    /// Symbole valide.
+    Sym(Vlc),
+    /// Code malformé (plus de 8 zéros) : ne peut pas apparaître dans un flux
+    /// conforme, donc signale une corruption — à distinguer d'une fin propre.
+    Invalid,
+    /// Flux épuisé en plein code.
+    Eof,
+}
+
 /// Quantification Table 1 : (seuil haut inclus sur |diff|, niveau, run).
 const T1_POS: [(i16, i16, u8); 8] = [
     (7, 3, 1),
@@ -140,44 +152,47 @@ pub fn write_eoc(w: &mut BitWriter) {
     write_code(w, 2, true);
 }
 
-/// Lit un symbole VLC. Renvoie `None` sur fin de flux ou code invalide
-/// (run > 8, ce qui ne peut pas se produire dans un flux conforme : la
-/// détection des codes de synchronisation se fait avant l'appel).
-pub fn read_vlc(r: &mut BitReader, subsampled: bool) -> Option<Vlc> {
-    let negative = r.read_bit()?;
+/// Lit un symbole VLC. La détection des codes de synchronisation (≥ 12 zéros)
+/// se fait avant l'appel ; un code de plus de 8 zéros est donc nécessairement
+/// une corruption (`Invalid`), distincte d'une fin de flux propre (`Eof`).
+pub fn read_vlc(r: &mut BitReader, subsampled: bool) -> VlcRead {
+    let Some(negative) = r.read_bit() else { return VlcRead::Eof };
     let mut run: u8 = 0;
     loop {
-        if r.read_bit()? {
-            break;
-        }
-        run += 1;
-        if run > 8 {
-            return None;
+        match r.read_bit() {
+            None => return VlcRead::Eof,
+            Some(true) => break,
+            Some(false) => {
+                run += 1;
+                if run > 8 {
+                    return VlcRead::Invalid;
+                }
+            }
         }
     }
     if negative {
         // `1 1` correspond à run = 0 ; `1 0^m 1` à run = m.
         if run == 2 {
-            return Some(Vlc::Eoc);
+            return VlcRead::Sym(Vlc::Eoc);
         }
         if subsampled {
             let (level, extra) = T2_DEC_NEG[run as usize];
-            Some(Vlc::Level { level, extra })
+            VlcRead::Sym(Vlc::Level { level, extra })
         } else {
-            Some(Vlc::Level { level: T1_DEC_NEG[run as usize], extra: false })
+            VlcRead::Sym(Vlc::Level { level: T1_DEC_NEG[run as usize], extra: false })
         }
     } else {
         // `0^k 1` : run = k − 1 zéros comptés après le premier bit lu.
         // Premier bit lu = 0 (negative=false), donc k = run + 1.
         let k = run + 1;
         if k > 8 {
-            return None;
+            return VlcRead::Invalid;
         }
         if subsampled {
             let (level, extra) = T2_DEC_POS[(k - 1) as usize];
-            Some(Vlc::Level { level, extra })
+            VlcRead::Sym(Vlc::Level { level, extra })
         } else {
-            Some(Vlc::Level { level: T1_DEC_POS[(k - 1) as usize], extra: false })
+            VlcRead::Sym(Vlc::Level { level: T1_DEC_POS[(k - 1) as usize], extra: false })
         }
     }
 }
@@ -262,6 +277,31 @@ mod tests {
         }
     }
 
+    /// Un code corrompu (plus de 8 zéros, impossible dans un flux conforme)
+    /// doit être distingué d'une fin de flux propre, sinon une corruption en
+    /// milieu de flux est prise pour une fin normale et silencieusement avalée.
+    #[test]
+    fn invalid_vlc_distinguished_from_eof() {
+        // Code valide : `01` = niveau +3 (Table 1).
+        let mut w = BitWriter::new();
+        w.put_bits(0b01, 2);
+        let bytes = w.finish();
+        assert!(matches!(read_vlc(&mut BitReader::new(&bytes), false), VlcRead::Sym(_)));
+
+        // `1` suivi de 10 zéros puis `1` : run = 10 > 8 → code corrompu.
+        let mut w = BitWriter::new();
+        w.put_bit(true);
+        for _ in 0..10 {
+            w.put_bit(false);
+        }
+        w.put_bit(true);
+        let bytes = w.finish();
+        assert_eq!(read_vlc(&mut BitReader::new(&bytes), false), VlcRead::Invalid);
+
+        // Flux vide : fin propre.
+        assert_eq!(read_vlc(&mut BitReader::new(&[]), false), VlcRead::Eof);
+    }
+
     /// Erratum Table 2 : frontière 9/10 entre +4 et +15.
     #[test]
     fn table2_erratum_boundary() {
@@ -291,7 +331,7 @@ mod tests {
                 let mut r = BitReader::new(&bytes);
                 for (i, e) in expect.iter().enumerate() {
                     let got = read_vlc(&mut r, subsampled);
-                    assert_eq!(got.as_ref(), Some(e), "symbole {i} (sub={subsampled} extra={extra})");
+                    assert_eq!(got, VlcRead::Sym(*e), "symbole {i} (sub={subsampled} extra={extra})");
                 }
             }
         }
