@@ -29,10 +29,17 @@ Prérequis :
 
 ```bash
 cargo build --release
-# le binaire est dans target/release/h120
 ```
 
-Sans GTK (encodeur/décodeur/info uniquement) :
+Deux binaires sont produits, volontairement séparés pour la portabilité :
+
+- `target/release/h120` — encodeur, décodeur et analyseur. **Aucune
+  dépendance graphique** (seule la libc est liée) : il se copie tel quel sur
+  un serveur ou une machine sans environnement de bureau ;
+- `target/release/h120-play` — le lecteur graphique, seul à dépendre de
+  GTK4/libadwaita.
+
+Pour ne compiler que le CLI (sans même avoir GTK installé) :
 
 ```bash
 cargo build --release --no-default-features
@@ -66,7 +73,7 @@ maximale du buffer de 96 kbit.
 ### Lire un flux dans une fenêtre
 
 ```bash
-h120 play sortie.h120
+h120-play sortie.h120
 ```
 
 Ouvre une fenêtre GTK4/libadwaita et joue le flux à 25 i/s, au rapport 4:3
@@ -108,7 +115,7 @@ sous-échantillonnées, vides), clusters, éléments extra et champs omis.
 ```bash
 h120 encode film.mp4 film.h120 --bitrate 1600k
 h120 info film.h120
-h120 play film.h120
+h120-play film.h120
 h120 decode film.h120 film.y4m --scale 2
 ffmpeg -i film.y4m -pix_fmt yuv420p film_h120.mp4
 ```

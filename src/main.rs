@@ -5,8 +5,6 @@ use clap::{Parser, Subcommand};
 use h120::codec::decoder::Decoder;
 use h120::codec::encoder::{Encoder, EncoderConfig};
 use h120::{codec, ffmpeg, source, y4m};
-#[cfg(feature = "player")]
-use h120::player;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -52,12 +50,6 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         scale: usize,
     },
-    /// Lit un flux .h120 dans une fenêtre (GTK4 + libadwaita)
-    #[cfg(feature = "player")]
-    Play {
-        /// Fichier .h120
-        input: PathBuf,
-    },
     /// Analyse un flux .h120 et affiche ses statistiques
     Info {
         /// Fichier .h120
@@ -87,8 +79,6 @@ fn main() -> Result<()> {
             cmd_encode(&input, &output, bitrate, mono, frames)
         }
         Command::Decode { input, output, scale } => cmd_decode(&input, &output, scale),
-        #[cfg(feature = "player")]
-        Command::Play { input } => player::run(&input),
         Command::Info { input } => cmd_info(&input),
     }
 }

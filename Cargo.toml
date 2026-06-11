@@ -15,5 +15,16 @@ clap = { version = "4", features = ["derive"] }
 gtk4 = { version = "0.9", features = ["v4_14"], optional = true }
 libadwaita = { version = "0.7", features = ["v1_5"], optional = true }
 
+# CLI encodeur/décodeur, sans aucune dépendance graphique.
+[[bin]]
+name = "h120"
+path = "src/main.rs"
+
+# Lecteur graphique séparé (GTK4 + libadwaita).
+[[bin]]
+name = "h120-play"
+path = "src/bin/h120-play.rs"
+required-features = ["player"]
+
 [profile.release]
 lto = true

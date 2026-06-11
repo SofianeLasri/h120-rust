@@ -1,17 +1,20 @@
-//! Lecteur de flux .h120 : fenêtre GTK4 + libadwaita, lecture à 25 i/s.
+//! h120-play — lecteur de flux .h120 : fenêtre GTK4 + libadwaita, 25 i/s.
 //!
-//! Le décodage tourne sur un thread dédié ; les images converties en RGB
-//! arrivent par un canal borné (contre-pression naturelle), et un tick GLib
-//! de 40 ms les affiche via une `gdk::MemoryTexture`.
+//! Binaire séparé du CLI `h120` pour que ce dernier reste exempt de toute
+//! dépendance graphique. Le décodage tourne sur un thread dédié ; les images
+//! converties en RGB arrivent par un canal borné (contre-pression
+//! naturelle), et un tick GLib de 40 ms les affiche via une
+//! `gdk::MemoryTexture`.
 
-use crate::codec::decoder::Decoder;
-use crate::source;
-use crate::y4m::Frame444;
 use adw::prelude::*;
 use anyhow::{Context, Result};
+use clap::Parser;
 use gtk::{gdk, glib};
-use libadwaita as adw;
 use gtk4 as gtk;
+use h120::codec::decoder::Decoder;
+use h120::source;
+use h120::y4m::Frame444;
+use libadwaita as adw;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -78,7 +81,23 @@ fn decoder_thread(data: Vec<u8>, tx: mpsc::SyncSender<RgbFrame>, looping: Arc<At
     }
 }
 
-pub fn run(input: &Path) -> Result<()> {
+#[derive(Parser)]
+#[command(
+    name = "h120-play",
+    version,
+    about = "Lecteur graphique (GTK4 + libadwaita) de flux vidéo H.120"
+)]
+struct Cli {
+    /// Fichier .h120 à lire
+    input: std::path::PathBuf,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    run(&cli.input)
+}
+
+fn run(input: &Path) -> Result<()> {
     let data =
         std::fs::read(input).with_context(|| format!("lecture de {}", input.display()))?;
     let title = input
