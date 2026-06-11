@@ -1,0 +1,19 @@
+[package]
+name = "h120"
+version = "0.1.0"
+edition = "2024"
+description = "Implémentation de référence du codec vidéo ITU-T H.120 (clause 1, 1984)"
+license = "MIT"
+
+[features]
+default = ["player"]
+player = ["dep:gtk4", "dep:libadwaita"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+gtk4 = { version = "0.9", features = ["v4_14"], optional = true }
+libadwaita = { version = "0.7", features = ["v1_5"], optional = true }
+
+[profile.release]
+lto = true
