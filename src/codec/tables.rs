@@ -1,40 +1,40 @@
-//! Lois de quantification et codes à longueur variable (Tables 1 et 2/H.120).
+//! Quantization laws and variable-length codes (Tables 1 and 2/H.120).
 //!
-//! Tous les codes des deux tables ont l'une des deux formes :
-//!   - côté positif : k zéros suivis d'un 1          (k = 1..8)
-//!   - côté négatif : un 1, m zéros, puis un 1       (m = 0..8)
+//! Every code in both tables has one of two forms:
+//!   - positive side: k zeros followed by a 1          (k = 1..8)
+//!   - negative side: a 1, m zeros, then a 1           (m = 0..8)
 //!
-//! Le code de fin de cluster EOC = 1001 correspond à m = 2 (code n° 11,
-//! §1.4.1.3.2) dans les deux tables, ce qui rend l'ensemble préfixe-libre.
+//! The end-of-cluster code EOC = 1001 corresponds to m = 2 (code no. 11,
+//! §1.4.1.3.2) in both tables, which makes the whole set prefix-free.
 //!
-//! Erratum : la Table 2 imprime « 0 to 22 » pour le niveau +15 ; il faut
-//! lire « 10 to 22 » (sinon les plages 0..9 et 0..22 se chevauchent).
+//! Erratum: Table 2 prints "0 to 22" for level +15; this should read
+//! "10 to 22" (otherwise the ranges 0..9 and 0..22 overlap).
 
 use super::bitio::{BitReader, BitWriter};
 
-/// Symbole décodé d'une zone mobile.
+/// Decoded symbol of a moving area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Vlc {
-    /// Niveau de sortie DPCM. `extra` n'a de sens que sur les lignes
-    /// sous-échantillonnées (élément « extra », §1.4.1.4.1).
+    /// DPCM output level. `extra` only makes sense on subsampled lines
+    /// ("extra" element, §1.4.1.4.1).
     Level { level: i16, extra: bool },
-    /// Fin de cluster.
+    /// End of cluster.
     Eoc,
 }
 
-/// Résultat de la lecture d'un code VLC.
+/// Result of reading a VLC code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VlcRead {
-    /// Symbole valide.
+    /// Valid symbol.
     Sym(Vlc),
-    /// Code malformé (plus de 8 zéros) : ne peut pas apparaître dans un flux
-    /// conforme, donc signale une corruption — à distinguer d'une fin propre.
+    /// Malformed code (more than 8 zeros): cannot appear in a conforming
+    /// stream, so it signals corruption — to be distinguished from a clean end.
     Invalid,
-    /// Flux épuisé en plein code.
+    /// Stream exhausted in the middle of a code.
     Eof,
 }
 
-/// Quantification Table 1 : (seuil haut inclus sur |diff|, niveau, run).
+/// Table 1 quantization: (inclusive upper threshold on |diff|, level, run).
 const T1_POS: [(i16, i16, u8); 8] = [
     (7, 3, 1),
     (17, 12, 2),
@@ -56,8 +56,8 @@ const T1_NEG: [(i16, i16, u8); 8] = [
     (255, -141, 8),
 ];
 
-/// Quantification Table 2 : (seuil haut inclus sur |diff|, niveau, run
-/// élément normal, run élément extra).
+/// Table 2 quantization: (inclusive upper threshold on |diff|, level, run for
+/// a normal element, run for an extra element).
 const T2_POS: [(i16, i16, u8, u8); 4] = [
     (9, 4, 1, 3),
     (22, 15, 2, 5),
@@ -71,11 +71,11 @@ const T2_NEG: [(i16, i16, u8, u8); 4] = [
     (255, -50, 6, 8),
 ];
 
-/// Décodage Table 1, côté positif : indice = k − 1.
+/// Table 1 decoding, positive side: index = k − 1.
 const T1_DEC_POS: [i16; 8] = [3, 12, 23, 38, 57, 80, 107, 140];
-/// Décodage Table 1, côté négatif : indice = m (m = 2 → EOC).
+/// Table 1 decoding, negative side: index = m (m = 2 → EOC).
 const T1_DEC_NEG: [i16; 9] = [-4, -13, 0, -24, -39, -58, -81, -108, -141];
-/// Décodage Table 2, côté positif : indice = k − 1, (niveau, extra).
+/// Table 2 decoding, positive side: index = k − 1, (level, extra).
 const T2_DEC_POS: [(i16, bool); 8] = [
     (4, false),
     (15, false),
@@ -86,7 +86,7 @@ const T2_DEC_POS: [(i16, bool); 8] = [
     (30, true),
     (49, true),
 ];
-/// Décodage Table 2, côté négatif : indice = m (m = 2 → EOC).
+/// Table 2 decoding, negative side: index = m (m = 2 → EOC).
 const T2_DEC_NEG: [(i16, bool); 9] = [
     (-5, false),
     (-16, false),
@@ -99,8 +99,8 @@ const T2_DEC_NEG: [(i16, bool); 9] = [
     (-50, true),
 ];
 
-/// Quantifie une erreur de prédiction et renvoie (niveau, run, côté négatif).
-/// `diff` est dans [−255, 255] (§1.4.1.3.2 : 511 niveaux d'entrée).
+/// Quantizes a prediction error and returns (level, run, negative side).
+/// `diff` is in [−255, 255] (§1.4.1.3.2: 511 input levels).
 pub fn quantize(diff: i16, subsampled: bool, extra: bool) -> (i16, u8, bool) {
     debug_assert!((-255..=255).contains(&diff));
     if subsampled {
@@ -118,7 +118,7 @@ pub fn quantize(diff: i16, subsampled: bool, extra: bool) -> (i16, u8, bool) {
             }
         }
     } else {
-        debug_assert!(!extra, "pas d'éléments extra hors sous-échantillonnage");
+        debug_assert!(!extra, "no extra elements outside subsampling");
         if diff >= 0 {
             for &(hi, level, k) in &T1_POS {
                 if diff <= hi {
@@ -133,10 +133,10 @@ pub fn quantize(diff: i16, subsampled: bool, extra: bool) -> (i16, u8, bool) {
             }
         }
     }
-    unreachable!("plages de quantification exhaustives")
+    unreachable!("quantization ranges are exhaustive")
 }
 
-/// Écrit un code VLC : côté positif `0^k 1`, côté négatif `1 0^m 1`.
+/// Writes a VLC code: positive side `0^k 1`, negative side `1 0^m 1`.
 pub fn write_code(w: &mut BitWriter, run: u8, negative: bool) {
     if negative {
         w.put_bit(true);
@@ -147,14 +147,14 @@ pub fn write_code(w: &mut BitWriter, run: u8, negative: bool) {
     w.put_bit(true);
 }
 
-/// Écrit le code de fin de cluster (1001).
+/// Writes the end-of-cluster code (1001).
 pub fn write_eoc(w: &mut BitWriter) {
     write_code(w, 2, true);
 }
 
-/// Lit un symbole VLC. La détection des codes de synchronisation (≥ 12 zéros)
-/// se fait avant l'appel ; un code de plus de 8 zéros est donc nécessairement
-/// une corruption (`Invalid`), distincte d'une fin de flux propre (`Eof`).
+/// Reads a VLC symbol. Synchronization codes (≥ 12 zeros) are detected before
+/// the call; a code with more than 8 zeros is therefore necessarily a
+/// corruption (`Invalid`), distinct from a clean end of stream (`Eof`).
 pub fn read_vlc(r: &mut BitReader, subsampled: bool) -> VlcRead {
     let Some(negative) = r.read_bit() else { return VlcRead::Eof };
     let mut run: u8 = 0;
@@ -171,7 +171,7 @@ pub fn read_vlc(r: &mut BitReader, subsampled: bool) -> VlcRead {
         }
     }
     if negative {
-        // `1 1` correspond à run = 0 ; `1 0^m 1` à run = m.
+        // `1 1` corresponds to run = 0; `1 0^m 1` to run = m.
         if run == 2 {
             return VlcRead::Sym(Vlc::Eoc);
         }
@@ -182,8 +182,8 @@ pub fn read_vlc(r: &mut BitReader, subsampled: bool) -> VlcRead {
             VlcRead::Sym(Vlc::Level { level: T1_DEC_NEG[run as usize], extra: false })
         }
     } else {
-        // `0^k 1` : run = k − 1 zéros comptés après le premier bit lu.
-        // Premier bit lu = 0 (negative=false), donc k = run + 1.
+        // `0^k 1`: run = k − 1 zeros counted after the first bit read.
+        // First bit read = 0 (negative=false), so k = run + 1.
         let k = run + 1;
         if k > 8 {
             return VlcRead::Invalid;
@@ -201,7 +201,7 @@ pub fn read_vlc(r: &mut BitReader, subsampled: bool) -> VlcRead {
 mod tests {
     use super::*;
 
-    /// Reconstruit la chaîne de bits d'un code pour comparaison avec la spec.
+    /// Rebuilds a code's bit string for comparison with the spec.
     fn code_str(run: u8, negative: bool) -> String {
         let mut s = String::new();
         if negative {
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn table1_codes_match_spec() {
-        // (diff représentatif, niveau, code attendu) — Table 1/H.120.
+        // (representative diff, level, expected code) — Table 1/H.120.
         let cases: &[(i16, i16, &str)] = &[
             (-200, -141, "1000000001"),
             (-100, -108, "100000001"),
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn table2_codes_match_spec() {
-        // Éléments normaux puis extra — Table 2/H.120.
+        // Normal elements then extra — Table 2/H.120.
         let normal: &[(i16, i16, &str)] = &[
             (-100, -50, "10000001"),
             (-30, -31, "100001"),
@@ -277,18 +277,18 @@ mod tests {
         }
     }
 
-    /// Un code corrompu (plus de 8 zéros, impossible dans un flux conforme)
-    /// doit être distingué d'une fin de flux propre, sinon une corruption en
-    /// milieu de flux est prise pour une fin normale et silencieusement avalée.
+    /// A corrupted code (more than 8 zeros, impossible in a conforming stream)
+    /// must be distinguished from a clean end of stream, otherwise mid-stream
+    /// corruption is taken for a normal end and silently swallowed.
     #[test]
     fn invalid_vlc_distinguished_from_eof() {
-        // Code valide : `01` = niveau +3 (Table 1).
+        // Valid code: `01` = level +3 (Table 1).
         let mut w = BitWriter::new();
         w.put_bits(0b01, 2);
         let bytes = w.finish();
         assert!(matches!(read_vlc(&mut BitReader::new(&bytes), false), VlcRead::Sym(_)));
 
-        // `1` suivi de 10 zéros puis `1` : run = 10 > 8 → code corrompu.
+        // `1` followed by 10 zeros then `1`: run = 10 > 8 → corrupted code.
         let mut w = BitWriter::new();
         w.put_bit(true);
         for _ in 0..10 {
@@ -298,19 +298,19 @@ mod tests {
         let bytes = w.finish();
         assert_eq!(read_vlc(&mut BitReader::new(&bytes), false), VlcRead::Invalid);
 
-        // Flux vide : fin propre.
+        // Empty stream: clean end.
         assert_eq!(read_vlc(&mut BitReader::new(&[]), false), VlcRead::Eof);
     }
 
-    /// Erratum Table 2 : frontière 9/10 entre +4 et +15.
+    /// Table 2 erratum: the 9/10 boundary between +4 and +15.
     #[test]
     fn table2_erratum_boundary() {
         assert_eq!(quantize(9, true, false).0, 4);
         assert_eq!(quantize(10, true, false).0, 15);
     }
 
-    /// Tout diff encodé doit se relire à l'identique, et l'EOC doit rester
-    /// distinguable — vérifie de fait que l'espace de codes est préfixe-libre.
+    /// Every encoded diff must read back identically, and the EOC must stay
+    /// distinguishable — which in effect verifies the code space is prefix-free.
     #[test]
     fn roundtrip_all_diffs_with_eoc() {
         for subsampled in [false, true] {
@@ -331,17 +331,17 @@ mod tests {
                 let mut r = BitReader::new(&bytes);
                 for (i, e) in expect.iter().enumerate() {
                     let got = read_vlc(&mut r, subsampled);
-                    assert_eq!(got, VlcRead::Sym(*e), "symbole {i} (sub={subsampled} extra={extra})");
+                    assert_eq!(got, VlcRead::Sym(*e), "symbol {i} (sub={subsampled} extra={extra})");
                 }
             }
         }
     }
 
-    /// L'ensemble des codes valides d'une table est préfixe-libre :
-    /// aucune chaîne n'est préfixe d'une autre.
+    /// The set of valid codes of a table is prefix-free: no string is a prefix
+    /// of another.
     #[test]
     fn prefix_freeness_exhaustive() {
-        // Tous les codes possibles : positifs k=1..8, négatifs m=0..8 (m=2 = EOC).
+        // All possible codes: positive k=1..8, negative m=0..8 (m=2 = EOC).
         let mut codes: Vec<String> = Vec::new();
         for k in 1..=8u8 {
             codes.push(code_str(k, false));
@@ -352,7 +352,7 @@ mod tests {
         for (i, a) in codes.iter().enumerate() {
             for (j, b) in codes.iter().enumerate() {
                 if i != j {
-                    assert!(!b.starts_with(a.as_str()), "{a} préfixe de {b}");
+                    assert!(!b.starts_with(a.as_str()), "{a} is a prefix of {b}");
                 }
             }
         }

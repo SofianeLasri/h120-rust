@@ -1,150 +1,145 @@
-# Le codec H.120 (clause 1) et le format de flux
+# The H.120 codec (clause 1) and the stream format
 
-Ce document résume le fonctionnement du codec et la structure exacte du
-bitstream produit/consommé par cette implémentation. Les références « §x.y »
-renvoient à la Rec. ITU-T H.120 (03/93).
+This document summarizes how the codec works and the exact structure of the
+bitstream produced/consumed by this implementation. The "§x.y" references point
+to Rec. ITU-T H.120 (03/93).
 
-## 1. Principe : conditional replenishment
+## 1. Principle: conditional replenishment
 
-H.120 ne transmet que ce qui change. L'encodeur et le décodeur entretiennent
-chacun une **mémoire d'image** (deux champs de 143 lignes × 256 échantillons) ;
-un détecteur de mouvement compare l'image entrante à la mémoire, et seuls les
-groupes d'échantillons jugés mobiles — les **clusters** — sont transmis,
-codés en DPCM avec des codes à longueur variable. Le reste de l'image est
-« réapprovisionné » lentement par des lignes PCM complètes.
+H.120 only transmits what changes. The encoder and the decoder each maintain a
+**frame memory** (two fields of 143 lines × 256 samples); a motion detector
+compares the incoming image to the memory, and only the groups of samples
+deemed moving — the **clusters** — are transmitted, coded in DPCM with
+variable-length codes. The rest of the image is slowly "replenished" by full
+PCM lines.
 
-La production de bits étant irrégulière, un **buffer de 96 kbit** (§1.5.1)
-lisse le débit vers le canal. Son remplissage pilote la dégradation
-progressive :
+Since bit production is irregular, a **96 kbit buffer** (§1.5.1) smooths the
+rate towards the channel. Its fill level drives the progressive degradation:
 
-1. seuils du détecteur de mouvement relevés ;
-2. **sous-échantillonnage horizontal** en quinconce : un échantillon sur deux
-   (pairs sur lignes paires, impairs sur lignes impaires), les manquants
-   étant interpolés au décodage (§1.4.1.4.1) ;
-3. **omission de champ** : un champ entier sauté, reconstruit par
-   interpolation spatio-temporelle (§1.4.1.4.2) ;
-4. en dernier recours, lignes laissées vides (l'image se fige).
+1. raised motion-detector thresholds;
+2. **horizontal subsampling** in a quincunx pattern: every other sample (even
+   ones on even lines, odd ones on odd lines), the missing ones being
+   interpolated at decoding (§1.4.1.4.1);
+3. **field omission**: a whole field skipped, reconstructed by
+   spatio-temporal interpolation (§1.4.1.4.2);
+4. as a last resort, lines left empty (the image freezes).
 
-À l'inverse, quand le buffer se vide, des **lignes PCM** non compressées
-rafraîchissent l'image en rotation (§1.5.5) — c'est aussi ce qui construit
-l'image initiale au démarrage.
+Conversely, when the buffer drains, uncompressed **PCM lines** refresh the
+image in rotation (§1.5.5) — this is also what builds up the initial image at
+startup.
 
-## 2. Format d'image
+## 2. Image format
 
 | | Luminance | Chrominance |
 |---|---|---|
-| Échantillons par ligne active | 256 (élément 255 forcé à 128) | 52 (adresses 4 à 55) |
-| Lignes actives par champ | 143 | 143 (une composante par ligne) |
-| Niveaux | noir 16, blanc 239 | zéro 128, plage 17–239 |
+| Samples per active line | 256 (element 255 forced to 128) | 52 (addresses 4 to 55) |
+| Active lines per field | 143 | 143 (one component per line) |
+| Levels | black 16, white 239 | zero 128, range 17–239 |
 
-Les composantes (B′−Y′) et (R′−Y′) alternent ligne à ligne : la première
-ligne du champ 1 porte (B′−Y′), la première du champ 2 porte (R′−Y′)
-(§1.4.2.1). La composante absente d'une ligne est interpolée à l'affichage.
+The (B′−Y′) and (R′−Y′) components alternate line by line: the first line of
+field 1 carries (B′−Y′), the first line of field 2 carries (R′−Y′) (§1.4.2.1).
+The component missing from a line is interpolated at display time.
 
-Les lignes sont numérotées 0–142 (champ 1) et 144–286 (champ 2) ; 143 et 287
-sont des lignes de synchronisation non codées (§1.5.2.1, Figure 3).
+The lines are numbered 0–142 (field 1) and 144–286 (field 2); 143 and 287 are
+uncoded synchronization lines (§1.5.2.1, Figure 3).
 
-## 3. Structure du bitstream
+## 3. Bitstream structure
 
-Tout est sérialisé MSB en premier (§1.6.1). Aucun alignement octet n'est
-garanti. Les valeurs PCM légales étant confinées à 16–239, les mots de
-synchronisation (≥ 12 zéros) et les codes spéciaux (0xFF, 0x09) ne peuvent
-pas être imités par des données.
+Everything is serialized MSB first (§1.6.1). No byte alignment is guaranteed.
+Since legal PCM values are confined to 16–239, the synchronization words (≥ 12
+zeros) and the special codes (0xFF, 0x09) cannot be imitated by data.
 
-### Code de début de ligne — LST (20 bits, §1.5.2.1)
+### Line start code — LST (20 bits, §1.5.2.1)
 
 ```
 0000 0000 0000 1000   S   LLL
-└── synchro 16 bits ┘  │   └─ 3 bits de poids faible du n° de ligne
-                       └─ 1 si la ligne qui suit est sous-échantillonnée
+└── 16-bit sync ────┘  │   └─ 3 low bits of the line number
+                       └─ 1 if the line that follows is subsampled
 ```
 
-### Code de début de champ — FST (48 bits, Figure 4)
+### Field start code — FST (48 bits, Figure 4)
 
 ```
 0000 0000 0000 1 AAA  F 111   0000 F11F   0000 0000 0000 1000  S 000
-└─ LST de la ligne 143/287 ┘  └─ octet ─┘ └─ LST de la ligne 0/144 ──┘
+└─ LST of line 143/287 ─┘     └─ byte ──┘ └─ LST of line 0/144 ─────┘
 ```
 
-- F = 1 : FST‑1 (le champ 1 suit) ; F = 0 : FST‑2 (le champ 2 suit) ;
-- AAA = 111 si le buffer de l'émetteur contient moins de 6 kbit (bit A) ;
-- S = sous-échantillonnage de la première ligne du champ.
+- F = 1: FST‑1 (field 1 follows); F = 0: FST‑2 (field 2 follows);
+- AAA = 111 if the transmitter buffer holds less than 6 kbit (A bit);
+- S = subsampling of the first line of the field.
 
-**Deux FST consécutifs de même numéro** signalent que le champ intermédiaire
-a été omis et doit être interpolé (§1.5.2.2).
+**Two consecutive FSTs with the same number** signal that the intermediate
+field was omitted and must be interpolated (§1.5.2.2).
 
-### Contenu d'une ligne (après son LST)
+### Content of a line (after its LST)
 
-Trois cas, discriminés par les 8 bits suivants :
+Three cases, discriminated by the next 8 bits:
 
-- `1111 1111` → **ligne PCM** (Figure 6) :
-  `0xFF, 0xFF, 256 octets de luminance (le dernier vaut 128), 52 octets de
-  chrominance`. Jamais sous-échantillonnée, non mobile pour l'interpolation
-  de champ.
-- `0000 1001` → **échappement couleur** : la ligne n'a pas de cluster luma,
-  les clusters chroma suivent directement.
-- ≥ 12 zéros → **ligne vide** (le LST suivant commence).
-- sinon → **clusters de luminance** :
+- `1111 1111` → **PCM line** (Figure 6):
+  `0xFF, 0xFF, 256 luminance bytes (the last one is 128), 52 chrominance
+  bytes`. Never subsampled, non-moving for field interpolation.
+- `0000 1001` → **color escape**: the line has no luma cluster, the chroma
+  clusters follow directly.
+- ≥ 12 zeros → **empty line** (the next LST begins).
+- otherwise → **luminance clusters**:
 
 ```
-PCM(8 bits)  adresse(8 bits)  VLC…  EOC  PCM  adresse  VLC…  [EOC  0000 1001  clusters chroma…]
+PCM(8 bits)  address(8 bits)  VLC…  EOC  PCM  address  VLC…  [EOC  0000 1001  chroma clusters…]
 ```
 
-Chaque cluster commence par la valeur PCM de son premier élément puis son
-adresse (§1.5.3). L'EOC (`1001`) sépare les clusters ; il est **omis après le
-dernier cluster de la ligne** (le mot de synchronisation suivant en tient
-lieu). Si des données couleur suivent, le dernier cluster luma garde son EOC,
-puis vient l'échappement `0000 1001` et les clusters chroma (adresses 4–55,
-même structure, §1.5.4).
+Each cluster starts with the PCM value of its first element then its address
+(§1.5.3). The EOC (`1001`) separates clusters; it is **omitted after the last
+cluster of the line** (the following synchronization word serves instead). If
+color data follows, the last luma cluster keeps its EOC, then comes the
+`0000 1001` escape and the chroma clusters (addresses 4–55, same structure,
+§1.5.4).
 
-Contraintes d'adressage : pas de cluster commençant à l'adresse 255 (luma) ou
-0x37 (chroma), écart minimal de 4 éléments entre clusters, longueur minimale
-1 (§1.5.3, §1.5.4).
+Addressing constraints: no cluster starting at address 255 (luma) or 0x37
+(chroma), a minimum gap of 4 elements between clusters, a minimum length of 1
+(§1.5.3, §1.5.4).
 
-## 4. DPCM et codes à longueur variable
+## 4. DPCM and variable-length codes
 
-Prédiction (§1.4.1.3.1, Figure 1) :
+Prediction (§1.4.1.3.1, Figure 1):
 
-- luminance : X = (A + D)/2, division tronquée — A = élément précédent sur la
-  même ligne, D = élément au-dessus à droite sur la ligne précédente du même
-  champ ; le blanking vaut 128 ;
-- chrominance : X = A (§1.4.2.3.1).
+- luminance: X = (A + D)/2, truncated division — A = previous element on the
+  same line, D = the upper-right element on the previous line of the same
+  field; blanking is 128;
+- chrominance: X = A (§1.4.2.3.1).
 
-L'erreur de prédiction (−255 à +255) est quantifiée sur 16 niveaux au plus.
-Tous les codes des Tables 1 et 2 ont l'une des deux formes `0…01` (niveaux
-positifs) ou `10…01` (niveaux négatifs), l'EOC `1001` occupant l'un des
-créneaux — l'ensemble est donc préfixe-libre et se décode en comptant les
-zéros.
+The prediction error (−255 to +255) is quantized into at most 16 levels. Every
+code of Tables 1 and 2 has one of the two forms `0…01` (positive levels) or
+`10…01` (negative levels), the EOC `1001` occupying one of the slots — the set
+is therefore prefix-free and decodes by counting zeros.
 
-**Table 1** (lignes normales) : 16 niveaux, de −141 à +140.
+**Table 1** (normal lines): 16 levels, from −141 to +140.
 
-**Table 2** (lignes sous-échantillonnées) : 8 niveaux pour les éléments
-normalement transmis + 8 codes « **extra** » qui permettent de transmettre un
-élément normalement omis quand son interpolation serait trop fausse
-(§1.4.1.4.1). Un cluster peut se terminer sur un élément normal ou extra.
+**Table 2** (subsampled lines): 8 levels for the elements normally transmitted
++ 8 "**extra**" codes that allow transmitting a normally omitted element when
+its interpolation would be too inaccurate (§1.4.1.4.1). A cluster can end on a
+normal or an extra element.
 
-En sous-échantillonnage, les substitutions de prédiction sont : A → AS
-(l'élément encore avant) si A n'a pas été transmis ; D → C (l'élément
-directement au-dessus) si D appartenait à une zone mobile sous-échantillonnée
-non transmise de la ligne précédente.
+Under subsampling, the prediction substitutions are: A → AS (the element even
+further back) if A was not transmitted; D → C (the element directly above) if
+D belonged to an untransmitted subsampled moving area of the previous line.
 
-## 5. Interpolation des champs omis (§1.4.1.4.2)
+## 5. Interpolation of omitted fields (§1.4.1.4.2)
 
-Pour un élément x du champ omis, encadré par les lignes des champs transmis
-précédent (a au-dessus, b en dessous) et suivant (c, d) :
+For an element x of the omitted field, bracketed by the lines of the previous
+transmitted field (a above, b below) and the following one (c, d):
 
-- x est mobile si a, b, c **ou** d est mobile (fonction OR) ; seuls les
-  éléments mobiles sont interpolés, le reste garde sa valeur ;
-- luminance : x = ((a+b)/2 + (c+d)/2)/2 ;
-- chrominance : x = (a+c)/2 dans le champ 1, (b+d)/2 dans le champ 2.
+- x is moving if a, b, c **or** d is moving (OR function); only moving elements
+  are interpolated, the rest keep their value;
+- luminance: x = ((a+b)/2 + (c+d)/2)/2;
+- chrominance: x = (a+c)/2 in field 1, (b+d)/2 in field 2.
 
-L'encodeur applique exactement la même interpolation à sa propre mémoire pour
-rester synchrone du décodeur.
+The encoder applies exactly the same interpolation to its own memory to stay in
+sync with the decoder.
 
-## 6. Le fichier `.h120`
+## 6. The `.h120` file
 
-Le fichier est la concaténation brute des FST, LST et données de ligne décrits
-ci-dessus — exactement le « multiplex vidéo » de la spec, sans en-tête ni
-conteneur. Le format étant entièrement fixé par la Recommandation (625/50,
-256×286, 25 images/s), le flux est auto-descriptif ; le décodeur se
-synchronise sur le premier FST trouvé.
+The file is the raw concatenation of the FSTs, LSTs and line data described
+above — exactly the "video multiplex" of the spec, with no header or container.
+Since the format is entirely fixed by the Recommendation (625/50, 256×286,
+25 fps), the stream is self-describing; the decoder synchronizes on the first
+FST it finds.

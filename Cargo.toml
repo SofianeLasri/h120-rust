@@ -2,7 +2,7 @@
 name = "h120"
 version = "0.1.0"
 edition = "2024"
-description = "Implémentation de référence du codec vidéo ITU-T H.120 (clause 1, 1984)"
+description = "Reference implementation of the ITU-T H.120 video codec (clause 1, 1984)"
 license = "MIT"
 
 [features]
@@ -15,12 +15,12 @@ clap = { version = "4", features = ["derive"] }
 gtk4 = { version = "0.9", features = ["v4_14"], optional = true }
 libadwaita = { version = "0.7", features = ["v1_5"], optional = true }
 
-# CLI encodeur/décodeur, sans aucune dépendance graphique.
+# Encoder/decoder CLI, with no graphical dependency whatsoever.
 [[bin]]
 name = "h120"
 path = "src/main.rs"
 
-# Lecteur graphique séparé (GTK4 + libadwaita).
+# Separate graphical player (GTK4 + libadwaita).
 [[bin]]
 name = "h120-play"
 path = "src/bin/h120-play.rs"

@@ -1,6 +1,5 @@
-//! Tests d'intégration : l'encodeur et le décodeur doivent rester en
-//! parfait synchronisme (boucle DPCM fermée), et le flux doit se décoder
-//! de bout en bout.
+//! Integration tests: the encoder and the decoder must stay in perfect
+//! lockstep (closed DPCM loop), and the stream must decode end to end.
 
 use h120::codec::decoder::Decoder;
 use h120::codec::encoder::{Encoder, EncoderConfig};
@@ -8,7 +7,7 @@ use h120::codec::{FieldStore, LINES_PER_FIELD, WIDTH};
 use h120::source::ingest;
 use h120::y4m::Frame444;
 
-/// Image de test : fond dégradé + un carré qui se déplace avec l'index.
+/// Test frame: a gradient background + a square that moves with the index.
 fn test_frame(t: usize, square: bool) -> Frame444 {
     let (w, h) = (256, 286);
     let mut f = Frame444::new(w, h);
@@ -50,8 +49,8 @@ fn psnr_y(a: &[u8], b: &[u8]) -> f64 {
     if mse == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / mse).log10() }
 }
 
-/// Scène statique : après l'amorçage PCM, le store décodé doit être
-/// EXACTEMENT l'entrée (les lignes PCM copient les échantillons).
+/// Static scene: after the PCM bootstrap, the decoded store must be EXACTLY
+/// the input (PCM lines copy the samples).
 #[test]
 fn static_scene_becomes_exact() {
     let frame = test_frame(0, false);
@@ -63,23 +62,23 @@ fn static_scene_becomes_exact() {
 
     let mut dec = Decoder::new(&data);
     let mut last = None;
-    while let Some(fields) = dec.next_frame().expect("décodage") {
+    while let Some(fields) = dec.next_frame().expect("decoding") {
         last = Some(fields);
     }
-    let fields = last.expect("au moins une image");
+    let fields = last.expect("at least one frame");
     let reference = ingest(&frame, false);
     for f in 0..2 {
         for l in 0..LINES_PER_FIELD {
-            assert_eq!(fields[f].y[l], reference[f].y[l], "luma champ {f} ligne {l}");
-            assert_eq!(fields[f].c[l], reference[f].c[l], "chroma champ {f} ligne {l}");
+            assert_eq!(fields[f].y[l], reference[f].y[l], "luma field {f} line {l}");
+            assert_eq!(fields[f].c[l], reference[f].c[l], "chroma field {f} line {l}");
         }
     }
     assert_eq!(dec.stats.frames, 40);
 }
 
-/// Mouvement modéré à haut débit : le store de l'encodeur et celui du
-/// décodeur doivent être identiques bit à bit après chaque image
-/// (boucle fermée). C'est LE test de conformité interne du codec.
+/// Moderate motion at high bitrate: the encoder store and the decoder store
+/// must be bit-for-bit identical after each frame (closed loop). This is THE
+/// internal conformance test of the codec.
 #[test]
 fn encoder_decoder_lockstep() {
     let mut enc = Encoder::new(EncoderConfig { bitrate: 2_000_000, mono: false });
@@ -89,7 +88,7 @@ fn encoder_decoder_lockstep() {
         enc.encode_frame(&test_frame(t, true));
         assert!(
             !enc.has_pending_interpolation(),
-            "pas d'omission de champ attendue à ce débit (image {t})"
+            "no field omission expected at this bitrate (frame {t})"
         );
         snapshots.push(enc.stores().clone());
     }
@@ -99,30 +98,30 @@ fn encoder_decoder_lockstep() {
     for (t, snap) in snapshots.iter().enumerate() {
         let fields = dec
             .next_frame()
-            .expect("décodage")
-            .unwrap_or_else(|| panic!("image {t} manquante"));
+            .expect("decoding")
+            .unwrap_or_else(|| panic!("frame {t} missing"));
         for f in 0..2 {
             assert!(
                 stores_equal(&fields[f], &snap[f]),
-                "désynchronisation encodeur/décodeur : image {t}, champ {f}"
+                "encoder/decoder desynchronization: frame {t}, field {f}"
             );
         }
     }
 }
 
-/// Le sous-échantillonnage horizontal (Table 2, éléments extra, quinconce)
-/// doit lui aussi préserver le synchronisme bit à bit des stores.
+/// Horizontal subsampling (Table 2, extra elements, quincunx) must also
+/// preserve the bit-for-bit lockstep of the stores.
 #[test]
 fn lockstep_with_horizontal_subsampling() {
     let mut enc = Encoder::new(EncoderConfig { bitrate: 1_400_000, mono: false });
     let n = 40;
-    // Snapshot par image, ignoré quand une interpolation de champ omis est
-    // en attente : le store encodeur est alors en avance d'un champ sur ce
-    // que le décodeur émettra (l'alignement revient à l'image suivante).
+    // One snapshot per frame, ignored when an omitted-field interpolation is
+    // pending: the encoder store is then one field ahead of what the decoder
+    // will emit (alignment returns on the next frame).
     let mut snapshots: Vec<Option<[FieldStore; 2]>> = Vec::new();
     let mut subsampled_seen = false;
     for t in 0..n {
-        // Deux carrés pour maintenir le buffer dans la zone de subsampling.
+        // Two squares to keep the buffer in the subsampling region.
         let mut frame = test_frame(t, true);
         let f2 = test_frame(t + 40, true);
         for i in 0..frame.y.len() {
@@ -139,41 +138,41 @@ fn lockstep_with_horizontal_subsampling() {
             Some(enc.stores().clone())
         });
     }
-    assert!(subsampled_seen, "le test doit exercer le sous-échantillonnage");
+    assert!(subsampled_seen, "the test must exercise subsampling");
     let compared = snapshots.iter().filter(|s| s.is_some()).count();
-    assert!(compared >= 10, "trop peu d'images comparables ({compared})");
+    assert!(compared >= 10, "too few comparable frames ({compared})");
     let data = enc.finish();
     let mut dec = Decoder::new(&data);
     for (t, snap) in snapshots.iter().enumerate() {
-        let Some(fields) = dec.next_frame().expect("décodage") else {
-            // La toute dernière image peut rester en attente d'émission si
-            // son champ 2 a été omis et que le flux s'arrête là.
-            assert!(t >= n - 1, "image {t} manquante");
+        let Some(fields) = dec.next_frame().expect("decoding") else {
+            // The very last frame may stay pending emission if its field 2
+            // was omitted and the stream stops there.
+            assert!(t >= n - 1, "frame {t} missing");
             break;
         };
         if let Some(snap) = snap {
             for f in 0..2 {
                 assert!(
                     stores_equal(&fields[f], &snap[f]),
-                    "désynchronisation en mode sous-échantillonné : image {t}, champ {f}"
+                    "desynchronization in subsampled mode: frame {t}, field {f}"
                 );
             }
         }
     }
     assert!(dec.stats.subsampled_lines > 0);
-    assert!(dec.stats.extra_elements > 0, "les éléments extra doivent être exercés");
+    assert!(dec.stats.extra_elements > 0, "extra elements must be exercised");
 }
 
-/// Fort mouvement à débit réduit : le contrôle de débit doit déclencher le
-/// sous-échantillonnage (Table 2) puis l'omission de champs, et le flux
-/// doit rester décodable de bout en bout avec une qualité plancher.
+/// Heavy motion at reduced bitrate: rate control must trigger subsampling
+/// (Table 2) then field omission, and the stream must stay decodable end to
+/// end with a quality floor.
 #[test]
 fn heavy_motion_survives_rate_control() {
     let mut enc = Encoder::new(EncoderConfig { bitrate: 1_000_000, mono: false });
     let n = 50;
     let mut last_input = None;
     for t in 0..n {
-        // Deux carrés en mouvement soutenu pour saturer le buffer.
+        // Two squares in sustained motion to saturate the buffer.
         let mut frame = test_frame(t * 2, true);
         let f2 = test_frame(t * 3 + 31, true);
         for i in 0..frame.y.len() {
@@ -187,25 +186,25 @@ fn heavy_motion_survives_rate_control() {
     }
     let stats = enc.stats.clone();
     let data = enc.finish();
-    assert!(stats.subsampled_lines > 0, "le sous-échantillonnage doit s'enclencher");
+    assert!(stats.subsampled_lines > 0, "subsampling must kick in");
     assert!(
         stats.max_occupancy <= 96.0 * 1024.0,
-        "le buffer de 96 kbit ne doit jamais déborder (max {:.0})",
+        "the 96 kbit buffer must never overflow (max {:.0})",
         stats.max_occupancy
     );
 
     let mut dec = Decoder::new(&data);
     let mut frames = 0u64;
     let mut last = None;
-    while let Some(fields) = dec.next_frame().expect("décodage sous charge") {
+    while let Some(fields) = dec.next_frame().expect("decoding under load") {
         frames += 1;
         last = Some(fields);
     }
-    // La dernière image peut rester en attente si son champ 2 a été omis.
-    assert!(frames >= n as u64 - 1, "{frames} images décodées sur {n}");
+    // The last frame may stay pending if its field 2 was omitted.
+    assert!(frames >= n as u64 - 1, "{frames} frames decoded of {n}");
     assert_eq!(dec.stats.subsampled_lines as u64 > 0, true);
 
-    // Qualité plancher sur la luminance du dernier état décodé.
+    // Quality floor on the luminance of the last decoded state.
     let fields = last.unwrap();
     let reference = ingest(&last_input.unwrap(), false);
     let mut dec_y = Vec::new();
@@ -217,16 +216,15 @@ fn heavy_motion_survives_rate_control() {
         }
     }
     let p = psnr_y(&dec_y, &ref_y);
-    assert!(p > 22.0, "PSNR luma trop bas sous charge : {p:.1} dB");
+    assert!(p > 22.0, "luma PSNR too low under load: {p:.1} dB");
 }
 
-/// Régression : du mouvement sur la toute dernière ligne codée du flux
-/// (image rangée 285 → champ 2, ligne 142) ne doit pas être avalé par le
-/// bourrage de fin de flux. Si la dernière ligne se termine sur des codes VLC
-/// laissant moins de 12 bits avant le bourrage à zéro, le décodeur les
-/// prenait pour un mot de synchro et abandonnait la ligne, désynchronisant la
-/// dernière image. On balaie plusieurs longueurs : sans le correctif, au moins
-/// l'une d'elles tombe sur cet alignement.
+/// Regression: motion on the very last coded line of the stream (image row
+/// 285 → field 2, line 142) must not be swallowed by the end-of-stream
+/// padding. If the last line ends on VLC codes leaving fewer than 12 bits
+/// before the zero padding, the decoder used to take them for a sync word and
+/// abandon the line, desynchronizing the last frame. We sweep several lengths:
+/// without the fix, at least one of them lands on that alignment.
 #[test]
 fn final_line_motion_survives_padding() {
     let (w, h) = (256, 286);
@@ -239,7 +237,7 @@ fn final_line_motion_survives_padding() {
                 f.cr[y * w + x] = 130;
             }
         }
-        // Damier mobile sur les trois dernières rangées (dont la 285).
+        // Moving checkerboard on the last three rows (including row 285).
         for y in (h - 3)..h {
             for x in 0..w {
                 let on = ((x + t * 7) / 9) % 2 == 0;
@@ -254,28 +252,28 @@ fn final_line_motion_survives_padding() {
         for t in 0..n {
             enc.encode_frame(&make(t));
         }
-        // Ce contenu reste à un débit modéré : aucune omission de champ.
+        // This content stays at a moderate bitrate: no field omission.
         assert!(!enc.has_pending_interpolation(), "n={n}");
         let snap = enc.stores().clone();
         let data = enc.finish();
 
         let mut dec = Decoder::new(&data);
         let mut last = None;
-        while let Some(fields) = dec.next_frame().expect("décodage") {
+        while let Some(fields) = dec.next_frame().expect("decoding") {
             last = Some(fields);
         }
-        let fields = last.unwrap_or_else(|| panic!("aucune image décodée (n={n})"));
+        let fields = last.unwrap_or_else(|| panic!("no frame decoded (n={n})"));
         for f in 0..2 {
             assert!(
                 stores_equal(&fields[f], &snap[f]),
-                "désync sur la dernière image (n={n}, champ {f})"
+                "desync on the last frame (n={n}, field {f})"
             );
         }
     }
 }
 
-/// Le flux doit se décoder à l'identique même tronqué proprement à une
-/// frontière d'image (robustesse du parseur en fin de flux).
+/// The stream must decode identically even when cleanly truncated at a frame
+/// boundary (parser robustness at end of stream).
 #[test]
 fn truncated_stream_is_graceful() {
     let mut enc = Encoder::new(EncoderConfig { bitrate: 1_600_000, mono: false });
@@ -286,15 +284,15 @@ fn truncated_stream_is_graceful() {
     for cut in [data.len() / 3, data.len() / 2, data.len() - 7] {
         let mut dec = Decoder::new(&data[..cut]);
         let mut frames = 0;
-        while let Some(_) = dec.next_frame().expect("le flux tronqué ne doit pas être une erreur") {
+        while let Some(_) = dec.next_frame().expect("a truncated stream must not be an error") {
             frames += 1;
         }
         assert!(frames < 10);
     }
 }
 
-/// Un flux monochrome reste un flux couleur (chrominance neutre) : aucun
-/// cluster chroma ne doit être émis.
+/// A monochrome stream stays a color stream (neutral chrominance): no chroma
+/// cluster must be emitted.
 #[test]
 fn mono_emits_no_chroma_clusters() {
     let mut enc = Encoder::new(EncoderConfig { bitrate: 1_600_000, mono: true });
@@ -304,7 +302,7 @@ fn mono_emits_no_chroma_clusters() {
     assert_eq!(enc.stats.chroma_clusters, 0);
     let data = enc.finish();
     let mut dec = Decoder::new(&data);
-    while dec.next_frame().expect("décodage mono").is_some() {}
+    while dec.next_frame().expect("mono decoding").is_some() {}
     assert_eq!(dec.stats.chroma_clusters, 0);
     assert!(dec.stats.frames > 0);
 }

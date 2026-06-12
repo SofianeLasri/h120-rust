@@ -1,9 +1,9 @@
-//! h120-play — lecteur de flux .h120 : fenêtre GTK4 + libadwaita, 25 i/s.
+//! h120-play — .h120 stream player: GTK4 + libadwaita window, 25 fps.
 //!
-//! Binaire séparé du CLI `h120` pour que ce dernier reste exempt de toute
-//! dépendance graphique. Le décodage tourne sur un thread dédié ; les images
-//! converties en RGB arrivent par un canal borné (contre-pression
-//! naturelle), et un tick GLib de 40 ms les affiche via une
+//! A separate binary from the `h120` CLI so the latter stays free of any
+//! graphical dependency. Decoding runs on a dedicated thread; frames
+//! converted to RGB arrive through a bounded channel (natural
+//! back-pressure), and a 40 ms GLib tick displays them via a
 //! `gdk::MemoryTexture`.
 
 use adw::prelude::*;
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-const FRAME_INTERVAL_MS: u64 = 40; // 25 images/s
+const FRAME_INTERVAL_MS: u64 = 40; // 25 frames/s
 
 struct RgbFrame {
     w: usize,
@@ -32,7 +32,7 @@ struct RgbFrame {
     total_pass: u64,
 }
 
-/// Conversion YCbCr (BT.601, plage limitée) → RGB entrelacé.
+/// YCbCr (BT.601, limited range) → interleaved RGB conversion.
 fn to_rgb(f: &Frame444) -> Vec<u8> {
     let mut rgb = vec![0u8; f.w * f.h * 3];
     for i in 0..f.w * f.h {
@@ -49,7 +49,7 @@ fn to_rgb(f: &Frame444) -> Vec<u8> {
     rgb
 }
 
-/// Thread de décodage : envoie les images en boucle tant que la fenêtre vit.
+/// Decoding thread: sends frames in a loop as long as the window lives.
 fn decoder_thread(data: Vec<u8>, tx: mpsc::SyncSender<RgbFrame>, looping: Arc<AtomicBool>) {
     let mut pass = 0u64;
     loop {
@@ -60,7 +60,7 @@ fn decoder_thread(data: Vec<u8>, tx: mpsc::SyncSender<RgbFrame>, looping: Arc<At
                 Ok(Some(fields)) => fields,
                 Ok(None) => break,
                 Err(e) => {
-                    eprintln!("erreur de décodage : {e}");
+                    eprintln!("decoding error: {e}");
                     break;
                 }
             };
@@ -70,7 +70,7 @@ fn decoder_thread(data: Vec<u8>, tx: mpsc::SyncSender<RgbFrame>, looping: Arc<At
                 .send(RgbFrame { w: frame.w, h: frame.h, rgb, index, total_pass: pass })
                 .is_err()
             {
-                return; // fenêtre fermée
+                return; // window closed
             }
             index += 1;
         }
@@ -85,10 +85,10 @@ fn decoder_thread(data: Vec<u8>, tx: mpsc::SyncSender<RgbFrame>, looping: Arc<At
 #[command(
     name = "h120-play",
     version,
-    about = "Lecteur graphique (GTK4 + libadwaita) de flux vidéo H.120"
+    about = "Graphical player (GTK4 + libadwaita) for H.120 video streams"
 )]
 struct Cli {
-    /// Fichier .h120 à lire
+    /// .h120 file to play
     input: std::path::PathBuf,
 }
 
@@ -99,20 +99,20 @@ fn main() -> Result<()> {
 
 fn run(input: &Path) -> Result<()> {
     let data =
-        std::fs::read(input).with_context(|| format!("lecture de {}", input.display()))?;
+        std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
     let title = input
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "flux H.120".into());
+        .unwrap_or_else(|| "H.120 stream".into());
 
     let app = adw::Application::builder()
-        .application_id("io.github.h120.Reference")
+        .application_id("fr.sofianelasri.h120-player")
         .build();
 
     app.connect_activate(move |app| {
         build_ui(app, data.clone(), title.clone());
     });
-    // Pas d'arguments : clap les a déjà consommés.
+    // No arguments: clap has already consumed them.
     app.run_with_args::<&str>(&[]);
     Ok(())
 }
@@ -130,8 +130,8 @@ fn build_ui(app: &adw::Application, data: Vec<u8>, title: String) {
         .hexpand(true)
         .vexpand(true)
         .build();
-    // L'image H.120 (256×286 + 2 lignes de bourrage) couvre un écran 4:3 :
-    // les pixels ne sont pas carrés, l'AspectFrame impose le bon rapport.
+    // The H.120 image (256×286 + 2 padding lines) covers a 4:3 screen: the
+    // pixels are not square, so the AspectFrame enforces the correct ratio.
     let aspect = gtk::AspectFrame::builder()
         .ratio(4.0 / 3.0)
         .obey_child(false)
@@ -140,16 +140,16 @@ fn build_ui(app: &adw::Application, data: Vec<u8>, title: String) {
         .build();
     aspect.set_child(Some(&picture));
 
-    let window_title = adw::WindowTitle::new(&title, "H.120 — 625 lignes / 50 champs / 25 i/s");
+    let window_title = adw::WindowTitle::new(&title, "H.120 — 625 lines / 50 fields / 25 fps");
 
     let pause_btn = gtk::ToggleButton::builder()
         .icon_name("media-playback-pause-symbolic")
-        .tooltip_text("Pause (espace)")
+        .tooltip_text("Pause (space)")
         .build();
 
     let loop_btn = gtk::ToggleButton::builder()
         .icon_name("media-playlist-repeat-symbolic")
-        .tooltip_text("Lecture en boucle")
+        .tooltip_text("Loop playback")
         .active(true)
         .build();
     {
@@ -172,7 +172,7 @@ fn build_ui(app: &adw::Application, data: Vec<u8>, title: String) {
         .content(&toolbar)
         .build();
 
-    // Espace = pause.
+    // Space = pause.
     let key = gtk::EventControllerKey::new();
     {
         let pause_btn = pause_btn.clone();
@@ -209,12 +209,12 @@ fn build_ui(app: &adw::Application, data: Vec<u8>, title: String) {
                     picture.set_paintable(Some(&texture));
                     let secs = frame.index as f64 / 25.0;
                     let pass = if frame.total_pass > 0 {
-                        format!(" — boucle {}", frame.total_pass + 1)
+                        format!(" — loop {}", frame.total_pass + 1)
                     } else {
                         String::new()
                     };
                     window_title.set_subtitle(&format!(
-                        "image {} · {:02}:{:05.2}{}",
+                        "frame {} · {:02}:{:05.2}{}",
                         frame.index,
                         (secs / 60.0) as u32,
                         secs % 60.0,
@@ -223,7 +223,7 @@ fn build_ui(app: &adw::Application, data: Vec<u8>, title: String) {
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    window_title.set_subtitle("fin du flux");
+                    window_title.set_subtitle("end of stream");
                     return glib::ControlFlow::Break;
                 }
             }

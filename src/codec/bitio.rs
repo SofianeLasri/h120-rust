@@ -1,7 +1,7 @@
-//! Lecture/écriture binaire MSB-first (§1.6.1 : « the most significant digit
-//! is in the leading position »).
+//! MSB-first binary reading/writing (§1.6.1: "the most significant digit is
+//! in the leading position").
 
-/// Écrivain de bits, MSB en premier.
+/// Bit writer, MSB first.
 pub struct BitWriter {
     buf: Vec<u8>,
     cur: u8,
@@ -26,19 +26,19 @@ impl BitWriter {
         }
     }
 
-    /// Écrit les `n` bits de poids faible de `v`, MSB en premier.
+    /// Writes the `n` low bits of `v`, MSB first.
     pub fn put_bits(&mut self, v: u32, n: u8) {
         for i in (0..n).rev() {
             self.put_bit((v >> i) & 1 != 0);
         }
     }
 
-    /// Nombre total de bits écrits jusqu'ici.
+    /// Total number of bits written so far.
     pub fn bit_len(&self) -> u64 {
         self.total_bits
     }
 
-    /// Termine le flux (bourrage à zéro jusqu'à l'octet entier).
+    /// Ends the stream (zero-padding up to a whole byte).
     pub fn finish(mut self) -> Vec<u8> {
         if self.nbits > 0 {
             self.cur <<= 8 - self.nbits;
@@ -48,10 +48,10 @@ impl BitWriter {
     }
 }
 
-/// Lecteur de bits, MSB en premier. `None` = fin du flux.
+/// Bit reader, MSB first. `None` = end of stream.
 pub struct BitReader<'a> {
     data: &'a [u8],
-    /// Position en bits depuis le début.
+    /// Position in bits from the start.
     pos: u64,
 }
 
@@ -82,7 +82,7 @@ impl<'a> BitReader<'a> {
         Some(bit)
     }
 
-    /// Lit `n` bits (n ≤ 32), MSB en premier.
+    /// Reads `n` bits (n ≤ 32), MSB first.
     pub fn read_bits(&mut self, n: u8) -> Option<u32> {
         if self.remaining() < n as u64 {
             return None;
@@ -94,7 +94,7 @@ impl<'a> BitReader<'a> {
         Some(v)
     }
 
-    /// Regarde `n` bits sans consommer.
+    /// Peeks `n` bits without consuming them.
     pub fn peek_bits(&mut self, n: u8) -> Option<u32> {
         let save = self.pos;
         let v = self.read_bits(n);
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(r.read_bits(8), Some(0));
         assert_eq!(r.read_bits(1), Some(1));
         assert_eq!(r.read_bits(10), Some(0x2A3));
-        // Bourrage : 1 bit restant à zéro.
+        // Padding: 1 remaining bit, zero.
         assert_eq!(r.read_bits(1), Some(0));
         assert_eq!(r.read_bit(), None);
     }

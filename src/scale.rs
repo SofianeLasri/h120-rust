@@ -1,17 +1,16 @@
-//! Redimensionnement bilinéaire de plans 8 bits.
+//! Bilinear resizing of 8-bit planes.
 //!
-//! Sert de pré-filtre spatial : la spec laisse les pré/post-filtres au choix
-//! de l'implémentation (§1.4.1.2 — seule la géométrie 256×143/champ est
-//! imposée).
+//! Acts as a spatial pre-filter: the spec leaves the pre/post filters to the
+//! implementation (§1.4.1.2 — only the 256×143/field geometry is imposed).
 
-/// Redimensionne `src` (sw × sh) vers (dw × dh) en bilinéaire.
+/// Resizes `src` (sw × sh) to (dw × dh) bilinearly.
 pub fn resize_plane(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
     assert_eq!(src.len(), sw * sh);
     if sw == dw && sh == dh {
         return src.to_vec();
     }
     let mut dst = vec![0u8; dw * dh];
-    // Coordonnées en virgule fixe 16.16, échantillonnage au centre du pixel.
+    // 16.16 fixed-point coordinates, sampling at the pixel center.
     const F: u64 = 1 << 16;
     let xr = (sw as u64 * F) / dw as u64;
     let yr = (sh as u64 * F) / dh as u64;

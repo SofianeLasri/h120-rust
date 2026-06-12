@@ -1,10 +1,10 @@
-//! Lecture et écriture du format YUV4MPEG2 (Y4M), suffisant pour piper
-//! depuis/vers ffmpeg sans dépendance externe.
+//! Reading and writing the YUV4MPEG2 (Y4M) format, enough to pipe to/from
+//! ffmpeg without an external dependency.
 
 use anyhow::{Context, Result, bail};
 use std::io::{BufRead, Write};
 
-/// Image en YCbCr 4:4:4, plans pleins de `w × h` octets.
+/// A YCbCr 4:4:4 frame, full planes of `w × h` bytes.
 #[derive(Clone)]
 pub struct Frame444 {
     pub w: usize,
@@ -41,20 +41,20 @@ pub struct Y4mReader<R: BufRead> {
 impl<R: BufRead> Y4mReader<R> {
     pub fn new(mut inner: R) -> Result<Self> {
         let mut header = Vec::new();
-        inner.read_until(b'\n', &mut header).context("lecture de l'en-tête Y4M")?;
+        inner.read_until(b'\n', &mut header).context("reading the Y4M header")?;
         let header = String::from_utf8_lossy(&header);
         if !header.starts_with("YUV4MPEG2") {
-            bail!("le fichier n'est pas au format YUV4MPEG2 (Y4M)");
+            bail!("the file is not in YUV4MPEG2 (Y4M) format");
         }
         let (mut w, mut h, mut fn_, mut fd) = (0usize, 0usize, 25u32, 1u32);
         let mut sub = Subsampling::C420;
         for tok in header.split_whitespace().skip(1) {
             let (tag, val) = tok.split_at(1);
             match tag {
-                "W" => w = val.parse().context("largeur Y4M")?,
-                "H" => h = val.parse().context("hauteur Y4M")?,
+                "W" => w = val.parse().context("Y4M width")?,
+                "H" => h = val.parse().context("Y4M height")?,
                 "F" => {
-                    let (n, d) = val.split_once(':').context("fréquence Y4M")?;
+                    let (n, d) = val.split_once(':').context("Y4M frame rate")?;
                     fn_ = n.parse()?;
                     fd = d.parse()?;
                 }
@@ -68,19 +68,19 @@ impl<R: BufRead> Y4mReader<R> {
                     } else if val.starts_with("mono") {
                         Subsampling::Mono
                     } else {
-                        bail!("sous-échantillonnage Y4M non géré : C{val}")
+                        bail!("unsupported Y4M subsampling: C{val}")
                     };
                 }
                 _ => {}
             }
         }
         if w == 0 || h == 0 {
-            bail!("dimensions Y4M absentes");
+            bail!("missing Y4M dimensions");
         }
         Ok(Y4mReader { inner, width: w, height: h, fps_num: fn_, fps_den: fd, sub, frame_buf: Vec::new() })
     }
 
-    /// Lit l'image suivante, convertie en 4:4:4. `None` en fin de flux.
+    /// Reads the next frame, converted to 4:4:4. `None` at end of stream.
     pub fn next_frame(&mut self) -> Result<Option<Frame444>> {
         let mut line = Vec::new();
         let n = self.inner.read_until(b'\n', &mut line)?;
@@ -88,7 +88,7 @@ impl<R: BufRead> Y4mReader<R> {
             return Ok(None);
         }
         if !line.starts_with(b"FRAME") {
-            bail!("marqueur FRAME attendu dans le flux Y4M");
+            bail!("FRAME marker expected in the Y4M stream");
         }
         let (w, h) = (self.width, self.height);
         let (cw, ch) = match self.sub {
@@ -100,7 +100,7 @@ impl<R: BufRead> Y4mReader<R> {
         let total = w * h + 2 * cw * ch;
         self.frame_buf.resize(total, 0);
         std::io::Read::read_exact(&mut self.inner, &mut self.frame_buf)
-            .context("lecture des plans Y4M")?;
+            .context("reading the Y4M planes")?;
         let mut f = Frame444::new(w, h);
         f.y.copy_from_slice(&self.frame_buf[..w * h]);
         if self.sub == Subsampling::Mono {
@@ -108,8 +108,8 @@ impl<R: BufRead> Y4mReader<R> {
         }
         let cb = &self.frame_buf[w * h..w * h + cw * ch];
         let cr = &self.frame_buf[w * h + cw * ch..];
-        // Sur-échantillonnage par réplication (suffisant : la chroma est
-        // ensuite réduite à 52 échantillons/ligne de toute façon).
+        // Upsampling by replication (good enough: the chroma is reduced to
+        // 52 samples/line afterwards anyway).
         for yy in 0..h {
             let sy = match self.sub {
                 Subsampling::C420 => yy / 2,
@@ -133,7 +133,7 @@ pub struct Y4mWriter<W: Write> {
     wrote_header: bool,
     pub fps_num: u32,
     pub fps_den: u32,
-    /// Rapport d'aspect des pixels (param. `A` de Y4M).
+    /// Pixel aspect ratio (Y4M `A` parameter).
     pub par: (u32, u32),
 }
 
@@ -142,7 +142,7 @@ impl<W: Write> Y4mWriter<W> {
         Y4mWriter { inner, wrote_header: false, fps_num, fps_den, par }
     }
 
-    /// Écrit une image 4:4:4.
+    /// Writes a 4:4:4 frame.
     pub fn write_frame(&mut self, f: &Frame444) -> Result<()> {
         if !self.wrote_header {
             writeln!(

@@ -1,9 +1,9 @@
-//! Pré- et post-traitement : conversion entre images Y4M et le format
-//! source H.120 (luma 256×143/champ, chroma 52 éch./ligne en alternance
-//! B'−Y' / R'−Y', §1.4.1 et §1.4.2).
+//! Pre- and post-processing: conversion between Y4M frames and the H.120
+//! source format (luma 256×143/field, chroma 52 samples/line alternating
+//! B'−Y' / R'−Y', §1.4.1 and §1.4.2).
 //!
-//! Les caractéristiques exactes des pré/post-filtres sont laissées libres
-//! par la spec ; on utilise un redimensionnement bilinéaire.
+//! The exact characteristics of the pre/post filters are left free by the
+//! spec; we use bilinear resizing.
 
 use crate::codec::{
     BLANKING, C_MAX, C_MIN, CHROMA_WIDTH, ChromaComp, FieldStore, LINES_PER_FIELD,
@@ -12,22 +12,22 @@ use crate::codec::{
 use crate::scale::resize_plane;
 use crate::y4m::Frame444;
 
-/// Hauteur de l'image affichée : 286 lignes tissées + 2 lignes de bourrage
-/// (pour une hauteur paire, pratique pour les conversions en aval).
+/// Height of the displayed image: 286 woven lines + 2 padding lines (to make
+/// an even height, convenient for downstream conversions).
 pub const OUT_HEIGHT: usize = 288;
-/// Rapport d'aspect des pixels : l'image 256×286 couvre un écran 4:3,
-/// soit (4/3) / (256/286) = 1144/768 = 143/96.
+/// Pixel aspect ratio: the 256×286 image covers a 4:3 screen, i.e.
+/// (4/3) / (256/286) = 1144/768 = 143/96.
 pub const PAR: (u32, u32) = (143, 96);
 
-/// Un champ d'entrée prêt à être codé.
+/// One input field ready to be coded.
 pub struct FieldInput {
     pub y: Vec<[u8; WIDTH]>,
-    /// La composante transmise sur chaque ligne (Cb ou Cr selon la ligne).
+    /// The component transmitted on each line (Cb or Cr depending on the line).
     pub c: Vec<[u8; CHROMA_WIDTH]>,
 }
 
-/// Convertit une image en deux champs au format source H.120.
-/// Champ 1 = lignes paires de l'image, champ 2 = lignes impaires (Figure 3).
+/// Converts a frame into two fields in the H.120 source format.
+/// Field 1 = even lines of the image, field 2 = odd lines (Figure 3).
 pub fn ingest(frame: &Frame444, mono: bool) -> [FieldInput; 2] {
     let h = LINES_PER_FRAME;
     let y = if (frame.w, frame.h) == (WIDTH, h) {
@@ -59,8 +59,8 @@ pub fn ingest(frame: &Frame444, mono: bool) -> [FieldInput; 2] {
             for e in 0..WIDTH {
                 fields[f].y[i][e] = y[src_line * WIDTH + e].clamp(Y_MIN, Y_MAX);
             }
-            // Le dernier élément de chaque ligne active est fixé à 128
-            // dans l'encodeur et le décodeur (§1.4.1.1).
+            // The last element of each active line is fixed to 128 in both the
+            // encoder and the decoder (§1.4.1.1).
             fields[f].y[i][WIDTH - 1] = BLANKING;
             let plane = match chroma_comp(f, i) {
                 ChromaComp::Cb => &cb,
@@ -74,9 +74,9 @@ pub fn ingest(frame: &Frame444, mono: bool) -> [FieldInput; 2] {
     fields
 }
 
-/// Reconstruit une image affichable à partir des deux champs décodés :
-/// tissage des champs, interpolation de la composante chroma absente de
-/// chaque ligne (§1.4.2.1) puis sur-échantillonnage horizontal 52 → 256.
+/// Reconstructs a displayable frame from the two decoded fields: weaving the
+/// fields, interpolating the chroma component missing from each line
+/// (§1.4.2.1), then horizontal upsampling 52 → 256.
 pub fn egress(store: &[FieldStore; 2]) -> Frame444 {
     let mut out = Frame444::new(WIDTH, OUT_HEIGHT);
     for line in out.y.iter_mut() {
@@ -87,8 +87,8 @@ pub fn egress(store: &[FieldStore; 2]) -> Frame444 {
             let dst_line = 2 * i + f;
             out.y[dst_line * WIDTH..(dst_line + 1) * WIDTH].copy_from_slice(&store[f].y[i]);
 
-            // Composante présente sur cette ligne + interpolation de l'autre
-            // à partir des lignes voisines du même champ (qui la portent).
+            // Component present on this line + interpolation of the other one
+            // from the neighbouring lines of the same field (which carry it).
             let own = &store[f].c[i];
             let mut other = [BLANKING; CHROMA_WIDTH];
             let above = i.checked_sub(1).map(|j| &store[f].c[j]);
@@ -114,7 +114,7 @@ pub fn egress(store: &[FieldStore; 2]) -> Frame444 {
     out
 }
 
-/// Agrandissement entier (plus proche voisin) pour l'affichage/export.
+/// Integer upscaling (nearest neighbour) for display/export.
 pub fn upscale(frame: &Frame444, n: usize) -> Frame444 {
     if n <= 1 {
         return frame.clone();
@@ -145,10 +145,10 @@ mod tests {
         let fields = ingest(&frame, false);
         assert_eq!(fields[0].y[0][0], 100);
         assert_eq!(fields[0].y[0][WIDTH - 1], BLANKING);
-        // Champ 1 ligne 0 porte Cb, ligne 1 porte Cr.
+        // Field 1 line 0 carries Cb, line 1 carries Cr.
         assert_eq!(fields[0].c[0][10], 90);
         assert_eq!(fields[0].c[1][10], 160);
-        // Champ 2 ligne 0 porte Cr.
+        // Field 2 line 0 carries Cr.
         assert_eq!(fields[1].c[0][10], 160);
 
         let mut store = [FieldStore::new(), FieldStore::new()];

@@ -1,9 +1,9 @@
-//! Encodeur H.120 clause 1 : conditional replenishment + DPCM + VLC.
+//! H.120 clause 1 encoder: conditional replenishment + DPCM + VLC.
 //!
-//! La spec impose le bitstream et les reconstructions ; elle laisse libres
-//! le détecteur de mouvement, le contrôle de débit et la stratégie de
-//! rafraîchissement (§1.4.1.3, Appendice I). Les choix faits ici sont
-//! documentés dans docs/DEVIATIONS.md.
+//! The spec fixes the bitstream and the reconstructions; it deliberately
+//! leaves the motion detector, the rate control and the refresh strategy free
+//! (§1.4.1.3, Appendix I). The choices made here are documented in
+//! docs/DEVIATIONS.md.
 
 use super::bitio::BitWriter;
 use super::tables;
@@ -15,29 +15,29 @@ use super::{
 use crate::source::{FieldInput, ingest};
 use crate::y4m::Frame444;
 
-/// Coût approximatif d'une ligne PCM : LST + 2 octets de signalisation
-/// + 256 octets luma + 52 octets chroma.
+/// Approximate cost of a PCM line: LST + 2 signalling bytes + 256 luma bytes
+/// + 52 chroma bytes.
 const PCM_LINE_BITS: f64 = (20 + 16 + 256 * 8 + 52 * 8) as f64;
 
-/// Seuils de pilotage par l'occupation du buffer (fractions de 96 kbit).
+/// Buffer-occupancy control thresholds (fractions of 96 kbit).
 const SUBSAMPLE_AT: f64 = 0.55;
 const FIELD_SKIP_AT: f64 = 0.72;
 const PANIC_AT: f64 = 0.97;
-// Les éléments extra n'existent que sur les lignes sous-échantillonnées
-// (buffer > SUBSAMPLE_AT) : on les permet en début de zone de subsampling
-// pour adoucir la transition (§1.4.1.4.1), plus quand le buffer se remplit.
+// Extra elements only exist on subsampled lines (buffer > SUBSAMPLE_AT): we
+// allow them at the start of a subsampling region to smooth the transition
+// (§1.4.1.4.1), plus when the buffer fills up.
 const EXTRA_OK_BELOW: f64 = 0.65;
 const PCM_REFRESH_BELOW: f64 = 0.45;
 const BOOTSTRAP_FILL_TO: f64 = 0.70;
 
-/// Erreur d'interpolation à partir de laquelle un élément « extra » est
-/// transmis sur les lignes sous-échantillonnées (§1.4.1.4.1).
+/// Interpolation error above which an "extra" element is transmitted on
+/// subsampled lines (§1.4.1.4.1).
 const EXTRA_THRESHOLD: i16 = 12;
 
 pub struct EncoderConfig {
-    /// Débit de vidange du buffer virtuel, en bit/s.
+    /// Drain rate of the virtual buffer, in bit/s.
     pub bitrate: u64,
-    /// Chrominance neutre (image monochrome, flux toujours au format couleur).
+    /// Neutral chrominance (monochrome image, stream always in color format).
     pub mono: bool,
 }
 
@@ -60,14 +60,14 @@ pub struct Encoder {
     cfg: EncoderConfig,
     w: BitWriter,
     store: [FieldStore; 2],
-    /// Occupation du buffer de transmission virtuel (bits), §1.5.1.
+    /// Occupancy of the virtual transmission buffer (bits), §1.5.1.
     occupancy: f64,
     drain_per_line: f64,
-    /// Pointeur de rafraîchissement cyclique par champ.
+    /// Cyclic refresh pointer per field.
     refresh_ptr: [usize; 2],
-    /// Lignes jamais rafraîchies (amorçage du décodeur).
+    /// Lines never refreshed (decoder bootstrap).
     refreshed: [Vec<bool>; 2],
-    /// Snapshot du champ 1 (B1) quand le champ 2 précédent a été omis.
+    /// Snapshot of field 1 (B1) when the previous field 2 was omitted.
     saved_b1: Option<FieldStore>,
     pub stats: EncStats,
 }
@@ -103,25 +103,25 @@ impl Encoder {
         }
     }
 
-    /// Encode une image (deux champs). L'image est convertie au format
-    /// source H.120 par `source::ingest`.
+    /// Encodes one frame (two fields). The frame is converted to the H.120
+    /// source format by `source::ingest`.
     pub fn encode_frame(&mut self, frame: &Frame444) {
         let fields = ingest(frame, self.cfg.mono);
         self.stats.frames += 1;
 
         self.encode_field(0, &fields[0]);
 
-        // Si le champ 2 de l'image précédente a été omis, le décodeur
-        // l'interpole après avoir reçu ce champ 1 : l'encodeur fait de même
-        // pour rester en parfait synchronisme (§1.4.1.4.2).
+        // If field 2 of the previous frame was omitted, the decoder
+        // interpolates it after receiving this field 1: the encoder does the
+        // same to stay in perfect lockstep (§1.4.1.4.2).
         if let Some(b1) = self.saved_b1.take() {
             let (f0, f1) = self.store.split_at_mut(1);
             interpolate_omitted_field(&mut f1[0], 1, &b1, &f0[0]);
         }
 
         if self.occ_ratio() > FIELD_SKIP_AT {
-            // Omission du champ 2 : rien n'est émis, le FST-1 suivant
-            // (deux FST de même numéro) le signale au décodeur (§1.5.2.2).
+            // Omitting field 2: nothing is emitted; the next FST-1 (two FSTs
+            // with the same number) signals it to the decoder (§1.5.2.2).
             self.saved_b1 = Some(self.store[0].clone());
             self.stats.fields_omitted += 1;
             self.drain(LINES_PER_FIELD);
@@ -130,7 +130,7 @@ impl Encoder {
         }
     }
 
-    /// Termine le flux et renvoie les octets.
+    /// Ends the stream and returns the bytes.
     pub fn finish(self) -> Vec<u8> {
         self.w.finish()
     }
@@ -139,14 +139,14 @@ impl Encoder {
         self.w.bit_len()
     }
 
-    /// État des deux champs reconstruits (pour les tests de synchronisme
-    /// encodeur/décodeur).
+    /// State of the two reconstructed fields (for encoder/decoder lockstep
+    /// tests).
     pub fn stores(&self) -> &[FieldStore; 2] {
         &self.store
     }
 
-    /// Vrai si l'interpolation d'un champ omis est encore en attente
-    /// (elle n'a lieu qu'au codage du champ 1 suivant).
+    /// True if the interpolation of an omitted field is still pending
+    /// (it only happens when coding the next field 1).
     pub fn has_pending_interpolation(&self) -> bool {
         self.saved_b1.is_some()
     }
@@ -157,8 +157,8 @@ impl Encoder {
 
         let pcm_lines = self.schedule_pcm_lines(f);
 
-        // Masque « zone mobile sous-échantillonnée non transmise » de la
-        // ligne précédente, pour la substitution D → C (§1.4.1.4.1).
+        // "Untransmitted subsampled moving area" mask of the previous line,
+        // for the D → C substitution (§1.4.1.4.1).
         let mut prev_not_trans = [false; WIDTH];
 
         for l in 0..LINES_PER_FIELD {
@@ -177,7 +177,7 @@ impl Encoder {
                 self.code_pcm_line(f, l, input);
                 prev_not_trans = [false; WIDTH];
             } else if panic {
-                // Buffer presque plein : ligne vide (l'image se fige).
+                // Buffer almost full: empty line (the image freezes).
                 self.stats.panic_lines += 1;
                 self.stats.empty_lines += 1;
                 prev_not_trans = [false; WIDTH];
@@ -191,10 +191,9 @@ impl Encoder {
         }
     }
 
-    /// Choisit les lignes PCM de ce champ (rafraîchissement systématique ou
-    /// forcé, §1.5.5). Stratégie : amorçage rapide tant que des lignes n'ont
-    /// jamais été transmises, puis une ligne par champ en rotation quand le
-    /// buffer le permet.
+    /// Picks the PCM lines for this field (systematic or forced refresh,
+    /// §1.5.5). Strategy: fast bootstrap as long as some lines have never been
+    /// transmitted, then one line per field in rotation when the buffer allows.
     fn schedule_pcm_lines(&mut self, f: usize) -> Vec<bool> {
         let mut lines = vec![false; LINES_PER_FIELD];
         let bootstrap = self.refreshed[f].iter().any(|&r| !r);
@@ -210,7 +209,7 @@ impl Encoder {
         let mut visited = 0;
         while budget > 0 && visited < LINES_PER_FIELD {
             if bootstrap {
-                // Priorité aux lignes jamais transmises.
+                // Priority to never-transmitted lines.
                 if !self.refreshed[f][ptr] {
                     lines[ptr] = true;
                     budget -= 1;
@@ -226,7 +225,7 @@ impl Encoder {
         lines
     }
 
-    /// LST : 0000 0000 0000 1000 + S + 3 bits de poids faible du n° de ligne
+    /// LST: 0000 0000 0000 1000 + S + 3 low bits of the line number
     /// (§1.5.2.1).
     fn write_lst(&mut self, s: bool, line_no: usize) {
         self.w.put_bits(0b0000_0000_0000_1000, 16);
@@ -234,9 +233,9 @@ impl Encoder {
         self.w.put_bits((line_no & 7) as u32, 3);
     }
 
-    /// FST : LST de la ligne 143/287 (F en position S, AAA dans le mot de
-    /// synchro), octet 0000F11F, LST de la première ligne du champ suivant
-    /// (Figure 4). FST-1 (F=1) précède le champ 1, FST-2 (F=0) le champ 2.
+    /// FST: LST of line 143/287 (F in the S position, AAA in the sync word),
+    /// byte 0000F11F, LST of the first line of the next field (Figure 4).
+    /// FST-1 (F=1) precedes field 1, FST-2 (F=0) precedes field 2.
     fn write_fst(&mut self, f: usize, s_first: bool) {
         let fbit = f == 0;
         let a = self.occupancy < 6.0 * 1024.0;
@@ -244,19 +243,19 @@ impl Encoder {
         self.w.put_bits(if a { 0b111 } else { 0b000 }, 3);
         self.w.put_bit(fbit);
         self.w.put_bits(0b111, 3);
-        // Octet central 0000F11F.
+        // Central byte 0000F11F.
         self.w.put_bits(0, 4);
         self.w.put_bit(fbit);
         self.w.put_bits(0b11, 2);
         self.w.put_bit(fbit);
-        // LST de la ligne 0 ou 144 (3 LSB = 000).
+        // LST of line 0 or 144 (3 LSB = 000).
         self.w.put_bits(0b0000_0000_0000_1000, 16);
         self.w.put_bit(s_first);
         self.w.put_bits(0b000, 3);
     }
 
-    /// Ligne PCM (Figure 6) : 0xFF, adresse invalide 0xFF, 255 valeurs PCM,
-    /// 10000000 (élément 255 = 128), puis 52 valeurs chroma (§1.5.5).
+    /// PCM line (Figure 6): 0xFF, invalid address 0xFF, 255 PCM values,
+    /// 10000000 (element 255 = 128), then 52 chroma values (§1.5.5).
     fn code_pcm_line(&mut self, f: usize, l: usize, input: &FieldInput) {
         self.stats.pcm_lines += 1;
         self.refreshed[f][l] = true;
@@ -272,13 +271,13 @@ impl Encoder {
         self.store[f].y[l] = input.y[l];
         self.store[f].y[l][WIDTH - 1] = BLANKING;
         self.store[f].c[l] = input.c[l];
-        // Une ligne PCM est non mobile pour l'interpolation de champ (§1.5.5).
+        // A PCM line is non-moving for field interpolation (§1.5.5).
         self.store[f].y_moving[l] = [false; WIDTH];
         self.store[f].c_moving[l] = [false; CHROMA_WIDTH];
     }
 
-    /// Détection de mouvement et codage des clusters d'une ligne.
-    /// Renvoie le masque des éléments mobiles non transmis (pour D → C).
+    /// Motion detection and cluster coding of a line.
+    /// Returns the mask of untransmitted moving elements (for D → C).
     fn code_moving_line(
         &mut self,
         f: usize,
@@ -291,7 +290,7 @@ impl Encoder {
         let thr = self.motion_threshold();
         let extra_ok = self.occ_ratio() < EXTRA_OK_BELOW;
 
-        // Détection (choix d'implémentation, sans incidence sur l'interop).
+        // Detection (implementation choice, no impact on interoperability).
         let mut y_clusters =
             detect_clusters(&input.y[l], &self.store[f].y[l], thr, WIDTH - 2, WIDTH - 2);
         let mut c_clusters = detect_clusters(
@@ -314,7 +313,7 @@ impl Encoder {
             self.stats.subsampled_lines += 1;
         }
 
-        // Copies locales pour éviter les double-emprunts sur le store.
+        // Local copies to avoid double borrows on the store.
         let prev_y: Option<[u8; WIDTH]> = if l > 0 { Some(self.store[f].y[l - 1]) } else { None };
         let mut y_line = self.store[f].y[l];
         let mut c_line = self.store[f].c[l];
@@ -324,7 +323,7 @@ impl Encoder {
         let has_chroma = !c_clusters.is_empty();
         for (i, &(s0, e1)) in y_clusters.iter().enumerate() {
             self.stats.luma_clusters += 1;
-            // PCM du premier élément, puis adresse (Figure sous §1.5.3).
+            // PCM of the first element, then address (figure under §1.5.3).
             self.w.put_bits(input.y[l][s0] as u32, 8);
             self.w.put_bits(s0 as u32, 8);
             y_line[s0] = input.y[l][s0];
@@ -353,15 +352,15 @@ impl Encoder {
             for e in s0..=e1 {
                 self.store[f].y_moving[l][e] = true;
             }
-            // EOC sauf après le dernier cluster de la ligne ; si des données
-            // couleur suivent, le dernier cluster luma garde son EOC (§1.5.4).
+            // EOC except after the last cluster of the line; if color data
+            // follows, the last luma cluster keeps its EOC (§1.5.4).
             if i + 1 < n_y || has_chroma {
                 tables::write_eoc(&mut self.w);
             }
         }
 
         if has_chroma {
-            // Code d'échappement couleur (PCM invalide 00001001, §1.5.4).
+            // Color escape code (invalid PCM 00001001, §1.5.4).
             self.w.put_bits(0b0000_1001, 8);
             let n_c = c_clusters.len();
             for (i, &(s0, e1)) in c_clusters.iter().enumerate() {
@@ -373,7 +372,7 @@ impl Encoder {
                     self.code_dpcm_sub_chroma(&input.c[l], &mut c_line, s0, e1, extra_ok);
                 } else {
                     for e in s0 + 1..=e1 {
-                        // Prédiction chroma : X = A (§1.4.2.3.1).
+                        // Chroma prediction: X = A (§1.4.2.3.1).
                         let pred = c_line[e - 1];
                         let diff = input.c[l][e] as i16 - pred as i16;
                         let (level, run, neg) = tables::quantize(diff, false, false);
@@ -396,9 +395,9 @@ impl Encoder {
         not_trans
     }
 
-    /// DPCM d'un cluster luma sous-échantillonné : quinconce, éléments
-    /// « extra » facultatifs, interpolation des éléments omis (§1.4.1.4.1).
-    /// `s0` et `e1` sont déjà alignés sur la parité de la ligne.
+    /// DPCM of a subsampled luma cluster: quincunx, optional "extra" elements,
+    /// interpolation of omitted elements (§1.4.1.4.1). `s0` and `e1` are
+    /// already aligned to the line parity.
     #[allow(clippy::too_many_arguments)]
     fn code_dpcm_sub_luma(
         &mut self,
@@ -415,7 +414,7 @@ impl Encoder {
         while q + 2 <= e1 {
             let o = q + 1;
             let t = q + 2;
-            // Élément extra si l'interpolation serait trop fausse.
+            // Extra element if the interpolation would be too far off.
             let interp_est = (line[q] as i16 + input[t] as i16) / 2;
             let mut o_transmitted = false;
             if extra_ok && (input[o] as i16 - interp_est).abs() >= EXTRA_THRESHOLD {
@@ -427,7 +426,7 @@ impl Encoder {
                 o_transmitted = true;
                 self.stats.extra_elements += 1;
             }
-            // Élément normal : A remplacé par AS s'il n'a pas été transmis.
+            // Normal element: A replaced by AS if it was not transmitted.
             let a = if o_transmitted { line[o] } else { line[q] };
             let pred = predict_luma(a, d_value(prev, prev_not_trans, t));
             let diff = input[t] as i16 - pred as i16;
@@ -435,7 +434,7 @@ impl Encoder {
             tables::write_code(&mut self.w, run, neg);
             line[t] = clamp_y(pred as i16 + level);
             if !o_transmitted {
-                // Interpolation des éléments omis, placée dans le store.
+                // Interpolation of omitted elements, written into the store.
                 line[o] = ((line[q] as u16 + line[t] as u16) / 2) as u8;
                 not_trans[o] = true;
             }
@@ -443,7 +442,7 @@ impl Encoder {
         }
     }
 
-    /// Même chose pour la chroma (prédiction X = A, pas de D).
+    /// Same for chroma (X = A prediction, no D).
     fn code_dpcm_sub_chroma(
         &mut self,
         input: &[u8; CHROMA_WIDTH],
@@ -479,20 +478,20 @@ impl Encoder {
         }
     }
 
-    /// Seuil du détecteur de mouvement, durci quand le buffer se remplit.
+    /// Motion-detector threshold, hardened as the buffer fills up.
     fn motion_threshold(&self) -> u8 {
         let r = self.occ_ratio();
         (4.0 + r * 14.0) as u8
     }
 }
 
-/// Détection des clusters d'une ligne : segments où |entrée − store| dépasse
-/// le seuil, fusionnés lorsque l'écart entre deux segments est inférieur à
-/// l'écart minimal autorisé entre clusters (4 éléments, §1.5.3) ou assez
-/// petit pour que la fusion coûte moins cher que l'adressage.
-/// `max_e` est le dernier élément codable (255 exclu pour la luma, §1.4.1.1) ;
-/// `max_start` la dernière adresse de départ autorisée (254 pour la luma,
-/// échantillon 50 pour la chroma dont l'adresse 0x37 est interdite, §1.5.4).
+/// Cluster detection on a line: segments where |input − store| exceeds the
+/// threshold, merged when the gap between two segments is smaller than the
+/// minimum allowed gap between clusters (4 elements, §1.5.3) or small enough
+/// that merging costs less than the addressing. `max_e` is the last codable
+/// element (255 excluded for luma, §1.4.1.1); `max_start` the last allowed
+/// start address (254 for luma, sample 50 for chroma whose address 0x37 is
+/// forbidden, §1.5.4).
 fn detect_clusters(
     input: &[u8],
     store: &[u8],
@@ -518,13 +517,13 @@ fn detect_clusters(
     if let Some(done) = cur {
         clusters.push(done);
     }
-    // Le recul éventuel d'un départ (max_start) peut créer un chevauchement.
+    // Pulling a start back (max_start) may create an overlap.
     merge_close(&mut clusters);
     clusters
 }
 
-/// Fusionne les clusters qui ne respectent plus l'écart minimal de
-/// 4 éléments entre fin et début (§1.5.3).
+/// Merges clusters that no longer respect the minimum 4-element gap between
+/// end and start (§1.5.3).
 fn merge_close(clusters: &mut Vec<(usize, usize)>) {
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for &(s, e) in clusters.iter() {
@@ -538,10 +537,9 @@ fn merge_close(clusters: &mut Vec<(usize, usize)>) {
     *clusters = merged;
 }
 
-/// Aligne début et fin de cluster sur la parité de la ligne (transmission en
-/// quinconce) : extension d'un élément si nécessaire, raccourcissement au
-/// bord de ligne (§1.4.1.4.1), puis re-fusion si l'écart minimal de
-/// 4 éléments n'est plus respecté.
+/// Aligns cluster start and end to the line parity (quincunx transmission):
+/// extends by one element if needed, shortens at the line edge (§1.4.1.4.1),
+/// then re-merges if the minimum 4-element gap is no longer respected.
 fn adjust_parity(clusters: &mut Vec<(usize, usize)>, parity: usize, max_e: usize) {
     for (s, e) in clusters.iter_mut() {
         if *s % 2 != parity {
@@ -554,7 +552,7 @@ fn adjust_parity(clusters: &mut Vec<(usize, usize)>, parity: usize, max_e: usize
             *e = *s;
         }
     }
-    // La parité peut réduire l'écart entre clusters sous le minimum : fusion.
+    // Parity may reduce the gap between clusters below the minimum: merge.
     merge_close(clusters);
 }
 
@@ -592,11 +590,11 @@ mod tests {
 
     #[test]
     fn parity_adjustment_extends() {
-        // Ligne paire : éléments pairs transmis.
+        // Even line: even elements transmitted.
         let mut c = vec![(11, 21)];
         adjust_parity(&mut c, 0, WIDTH - 2);
         assert_eq!(c, vec![(10, 22)]);
-        // Bord de ligne : raccourcissement.
+        // Line edge: shortening.
         let mut c = vec![(11, 253)];
         adjust_parity(&mut c, 1, 254);
         assert_eq!(c, vec![(11, 253)]);

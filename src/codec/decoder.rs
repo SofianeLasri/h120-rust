@@ -1,8 +1,8 @@
-//! Décodeur H.120 clause 1 : parseur du multiplex vidéo et reconstruction.
+//! H.120 clause 1 decoder: video multiplex parser and reconstruction.
 //!
-//! Le décodeur est strictement déterminé par la spec : LST/FST (§1.5.2),
-//! adressage des clusters (§1.5.3), données couleur (§1.5.4), lignes PCM
-//! (§1.5.5), DPCM (§1.4.1.3), sous-échantillonnages (§1.4.1.4).
+//! The decoder is strictly determined by the spec: LST/FST (§1.5.2), cluster
+//! addressing (§1.5.3), color data (§1.5.4), PCM lines (§1.5.5), DPCM
+//! (§1.4.1.3), subsampling (§1.4.1.4).
 
 use super::bitio::BitReader;
 use super::tables::{self, Vlc, VlcRead};
@@ -28,7 +28,7 @@ pub struct DecStats {
     pub total_bits: u64,
 }
 
-/// LST brut : 12 zéros + 1 + AAA + S + code de ligne (Figure 4 et §1.5.2.1).
+/// Raw LST: 12 zeros + 1 + AAA + S + line code (Figure 4 and §1.5.2.1).
 struct RawLst {
     aaa: u32,
     s: bool,
@@ -42,16 +42,16 @@ enum LstRead {
 }
 
 struct FstInfo {
-    /// 0 = FST-1 (champ 1), 1 = FST-2 (champ 2).
+    /// 0 = FST-1 (field 1), 1 = FST-2 (field 2).
     field: usize,
-    /// Bit A : buffer émetteur < 6 kbit (Figure 4).
+    /// A bit: transmitter buffer < 6 kbit (Figure 4).
     a_flag: bool,
-    /// Bit S de la première ligne du champ.
+    /// S bit of the first line of the field.
     s_first: bool,
 }
 
-/// Fin de cluster : code EOC explicite ou synchronisation (EOC omis sur le
-/// dernier cluster de la ligne, §1.4.1.3.2).
+/// End of cluster: explicit EOC code or synchronization (EOC omitted on the
+/// last cluster of the line, §1.4.1.3.2).
 enum ClusterEnd {
     Eoc,
     Sync,
@@ -65,10 +65,10 @@ struct EndInfo {
 pub struct Decoder<'a> {
     r: BitReader<'a>,
     pub store: [FieldStore; 2],
-    /// Numéro (0/1) du dernier FST vu, pour détecter les champs omis.
+    /// Number (0/1) of the last FST seen, to detect omitted fields.
     last_fst: Option<usize>,
     synced: bool,
-    /// Éléments mobiles non transmis de la ligne précédente (D → C).
+    /// Untransmitted moving elements of the previous line (D → C).
     prev_not_trans: [bool; WIDTH],
     pub stats: DecStats,
 }
@@ -85,8 +85,8 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Décode jusqu'à la prochaine image complète (paire de champs 1 + 2).
-    /// Renvoie `None` à la fin du flux.
+    /// Decodes up to the next complete frame (a pair of fields 1 + 2).
+    /// Returns `None` at the end of the stream.
     pub fn next_frame(&mut self) -> Result<Option<[FieldStore; 2]>> {
         loop {
             if !self.synced {
@@ -103,13 +103,13 @@ impl<'a> Decoder<'a> {
                 self.stats.a_flag_fields += 1;
             }
             let f = fst.field;
-            // Deux FST consécutifs de même numéro : le champ opposé a été
-            // omis et doit être interpolé (§1.5.2.2).
+            // Two consecutive FSTs with the same number: the opposite field
+            // was omitted and must be interpolated (§1.5.2.2).
             let omitted = self.last_fst == Some(f);
             self.last_fst = Some(f);
 
-            // Snapshot B1 : état du champ de même parité avant ce décodage,
-            // nécessaire à l'interpolation du champ omis et à l'émission.
+            // Snapshot B1: state of the same-parity field before this decode,
+            // needed for interpolating the omitted field and for emission.
             let b1 = self.store[f].clone();
             let complete = self.decode_field(f, fst.s_first)?;
             self.stats.total_bits = self.r.bit_pos();
@@ -126,9 +126,9 @@ impl<'a> Decoder<'a> {
                 interpolate_omitted_field(omitted_store, 1 - f, &b1, a1);
             }
 
-            // Émission : après un champ 2 (image complète), ou après un
-            // champ 1 révélant l'omission du champ 2 précédent — l'image
-            // émise est alors (B1, champ 2 interpolé).
+            // Emission: after a field 2 (complete frame), or after a field 1
+            // revealing that the previous field 2 was omitted — the emitted
+            // frame is then (B1, interpolated field 2).
             if f == 1 {
                 self.stats.frames += 1;
                 return Ok(Some([self.store[0].clone(), self.store[1].clone()]));
@@ -139,7 +139,7 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Cherche le premier FST du flux (synchronisation initiale).
+    /// Searches for the first FST of the stream (initial synchronization).
     fn sync_to_fst(&mut self) -> bool {
         let mut start = self.r.bit_pos();
         loop {
@@ -155,7 +155,7 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Vrai si la position courante porte un FST plausible (consomme).
+    /// True if the current position holds a plausible FST (consumes bits).
     fn looks_like_fst(&mut self) -> bool {
         let LstRead::Lst(lst1) = self.read_raw_lst() else { return false };
         if lst1.line_code != 0b111 || !(lst1.aaa == 0 || lst1.aaa == 0b111) {
@@ -165,14 +165,14 @@ impl<'a> Decoder<'a> {
         if !(mid == 0b0000_1111 || mid == 0b0000_0110) {
             return false;
         }
-        // Le bit F apparaît en position S du premier LST et dans l'octet.
+        // The F bit appears in the S position of the first LST and in the byte.
         if ((mid >> 3) & 1 == 1) != lst1.s {
             return false;
         }
         matches!(self.read_raw_lst(), LstRead::Lst(l) if l.line_code == 0 && l.aaa == 0)
     }
 
-    /// Lit 20 bits de LST à la position courante.
+    /// Reads 20 bits of LST at the current position.
     fn read_raw_lst(&mut self) -> LstRead {
         let Some(prefix) = self.r.read_bits(13) else { return LstRead::Eof };
         if prefix != 1 {
@@ -186,38 +186,38 @@ impl<'a> Decoder<'a> {
         LstRead::Lst(RawLst { aaa, s: s == 1, line_code })
     }
 
-    /// Lit un FST complet (Figure 4). `None` en fin de flux.
+    /// Reads a complete FST (Figure 4). `None` at end of stream.
     fn read_fst(&mut self) -> Result<Option<FstInfo>> {
         if self.r.remaining() < 48 {
             return Ok(None);
         }
         let lst1 = match self.read_raw_lst() {
             LstRead::Eof => return Ok(None),
-            LstRead::Invalid => bail!("FST attendu au bit {}", self.r.bit_pos() - 13),
+            LstRead::Invalid => bail!("FST expected at bit {}", self.r.bit_pos() - 13),
             LstRead::Lst(l) => l,
         };
         if lst1.line_code != 0b111 {
-            bail!("FST : code de ligne 111 attendu, trouvé {:03b}", lst1.line_code);
+            bail!("FST: line code 111 expected, found {:03b}", lst1.line_code);
         }
         let a_flag = lst1.aaa == 0b111;
         let Some(mid) = self.r.read_bits(8) else { return Ok(None) };
         let field = match mid {
             0b0000_1111 => 0,
             0b0000_0110 => 1,
-            _ => bail!("octet central de FST invalide : {mid:08b}"),
+            _ => bail!("invalid FST central byte: {mid:08b}"),
         };
         let lst2 = match self.read_raw_lst() {
             LstRead::Eof => return Ok(None),
-            LstRead::Invalid => bail!("second LST du FST invalide"),
+            LstRead::Invalid => bail!("invalid second LST of the FST"),
             LstRead::Lst(l) => l,
         };
         if lst2.line_code != 0 {
-            bail!("second LST du FST : code de ligne 000 attendu");
+            bail!("second LST of the FST: line code 000 expected");
         }
         Ok(Some(FstInfo { field, a_flag, s_first: lst2.s }))
     }
 
-    /// Décode les 143 lignes d'un champ. `false` si le flux s'épuise.
+    /// Decodes the 143 lines of a field. `false` if the stream runs out.
     fn decode_field(&mut self, f: usize, s_first: bool) -> Result<bool> {
         self.store[f].clear_moving();
         self.prev_not_trans = [false; WIDTH];
@@ -227,7 +227,7 @@ impl<'a> Decoder<'a> {
                 let lst = match self.read_raw_lst() {
                     LstRead::Eof => return Ok(false),
                     LstRead::Invalid => bail!(
-                        "LST de la ligne {} introuvable (désynchronisation)",
+                        "LST of line {} not found (desynchronization)",
                         spec_line_number(f, l)
                     ),
                     LstRead::Lst(lst) => lst,
@@ -235,7 +235,7 @@ impl<'a> Decoder<'a> {
                 let expected = (spec_line_number(f, l) & 7) as u32;
                 if lst.aaa != 0 || lst.line_code != expected {
                     bail!(
-                        "LST inattendu (ligne {}, code {:03b} au lieu de {:03b})",
+                        "unexpected LST (line {}, code {:03b} instead of {:03b})",
                         spec_line_number(f, l),
                         lst.line_code,
                         expected
@@ -250,11 +250,11 @@ impl<'a> Decoder<'a> {
         Ok(true)
     }
 
-    /// Décode le contenu d'une ligne (après son LST).
+    /// Decodes the content of a line (after its LST).
     fn decode_line(&mut self, f: usize, l: usize, subsampled: bool) -> Result<bool> {
         let Some(first) = self.r.peek_bits(8) else {
-            // Fin de flux : seul reste le bourrage (< 8 bits). La ligne est
-            // vide, le champ peut se terminer normalement.
+            // End of stream: only padding remains (< 8 bits). The line is
+            // empty, the field can end normally.
             self.stats.empty_lines += 1;
             self.prev_not_trans = [false; WIDTH];
             return Ok(true);
@@ -288,12 +288,12 @@ impl<'a> Decoder<'a> {
                 break;
             }
             if !in_chroma {
-                // Cluster de luminance : PCM, adresse, codes VLC (§1.5.3).
+                // Luminance cluster: PCM, address, VLC codes (§1.5.3).
                 let Some(pcm) = self.r.read_bits(8) else { return Ok(false) };
                 let Some(addr) = self.r.read_bits(8) else { return Ok(false) };
                 let addr = addr as usize;
                 if addr >= WIDTH - 1 {
-                    bail!("adresse de cluster luma invalide : {addr}");
+                    bail!("invalid luma cluster address: {addr}");
                 }
                 self.stats.luma_clusters += 1;
                 let mut line = self.store[f].y[l];
@@ -324,12 +324,12 @@ impl<'a> Decoder<'a> {
                     ClusterEnd::Sync => break,
                 }
             } else {
-                // Cluster de chrominance après l'échappement couleur (§1.5.4).
+                // Chrominance cluster after the color escape (§1.5.4).
                 let Some(pcm) = self.r.read_bits(8) else { return Ok(false) };
                 let Some(addr) = self.r.read_bits(8) else { return Ok(false) };
                 let addr = addr as usize;
                 if !(CHROMA_ADDR_BASE..CHROMA_ADDR_BASE + CHROMA_WIDTH - 1).contains(&addr) {
-                    bail!("adresse de cluster chroma invalide : {addr}");
+                    bail!("invalid chroma cluster address: {addr}");
                 }
                 let sample = addr - CHROMA_ADDR_BASE;
                 self.stats.chroma_clusters += 1;
@@ -354,9 +354,9 @@ impl<'a> Decoder<'a> {
         Ok(true)
     }
 
-    /// Codes VLC d'un cluster de luminance. Prédiction X = (A+D)/2 avec les
-    /// substitutions A→AS et D→C du sous-échantillonnage (§1.4.1.3.1,
-    /// §1.4.1.4.1). Renvoie `None` si le flux s'épuise.
+    /// VLC codes of a luminance cluster. Prediction X = (A+D)/2 with the A→AS
+    /// and D→C substitutions of subsampling (§1.4.1.3.1, §1.4.1.4.1). Returns
+    /// `None` if the stream runs out.
     #[allow(clippy::too_many_arguments)]
     fn decode_luma_codes(
         &mut self,
@@ -369,8 +369,8 @@ impl<'a> Decoder<'a> {
         not_trans: &mut [bool; WIDTH],
     ) -> Result<Option<EndInfo>> {
         let max_e = WIDTH - 2;
-        let mut q = start; // dernière position « normale »
-        let mut last = start; // dernière position transmise
+        let mut q = start; // last "normal" position
+        let mut last = start; // last transmitted position
         loop {
             if self.at_sync() {
                 return Ok(Some(EndInfo { span_end: last, kind: ClusterEnd::Sync }));
@@ -378,7 +378,7 @@ impl<'a> Decoder<'a> {
             let sym = match tables::read_vlc(&mut self.r, subsampled) {
                 VlcRead::Sym(s) => s,
                 VlcRead::Eof => return Ok(None),
-                VlcRead::Invalid => bail!("code VLC luma invalide au bit {}", self.r.bit_pos()),
+                VlcRead::Invalid => bail!("invalid luma VLC code at bit {}", self.r.bit_pos()),
             };
             match sym {
                 Vlc::Eoc => {
@@ -387,7 +387,7 @@ impl<'a> Decoder<'a> {
                 Vlc::Level { level, extra: true } => {
                     let o = q + 1;
                     if o > max_e || last == o {
-                        bail!("élément extra hors cluster (position {o})");
+                        bail!("extra element outside cluster (position {o})");
                     }
                     self.stats.extra_elements += 1;
                     let pred = predict_luma(line[q], d_value(prev, prev_not_trans, o));
@@ -397,8 +397,8 @@ impl<'a> Decoder<'a> {
                 Vlc::Level { level, extra: false } => {
                     let (t, omitted) = if subsampled {
                         if q % 2 == parity {
-                            // L'élément intermédiaire a-t-il été transmis
-                            // comme « extra » ?
+                            // Was the intermediate element transmitted as
+                            // "extra"?
                             (q + 2, if last == q + 1 { None } else { Some(q + 1) })
                         } else {
                             (q + 1, None)
@@ -407,14 +407,14 @@ impl<'a> Decoder<'a> {
                         (q + 1, None)
                     };
                     if t > max_e {
-                        bail!("cluster luma au-delà de la ligne (position {t})");
+                        bail!("luma cluster beyond the line (position {t})");
                     }
-                    // Substitution A → AS si A n'a pas été transmis.
+                    // Substitution A → AS if A was not transmitted.
                     let a = if omitted.is_some() { line[q] } else { line[t - 1] };
                     let pred = predict_luma(a, d_value(prev, prev_not_trans, t));
                     line[t] = clamp_y(pred as i16 + level);
                     if let Some(o) = omitted {
-                        // Interpolation des éléments omis (§1.4.1.4.1).
+                        // Interpolation of omitted elements (§1.4.1.4.1).
                         line[o] = ((line[q] as u16 + line[t] as u16) / 2) as u8;
                         not_trans[o] = true;
                     }
@@ -425,7 +425,7 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Codes VLC d'un cluster de chrominance. Prédiction X = A (§1.4.2.3.1).
+    /// VLC codes of a chrominance cluster. Prediction X = A (§1.4.2.3.1).
     fn decode_chroma_codes(
         &mut self,
         start: usize,
@@ -443,7 +443,7 @@ impl<'a> Decoder<'a> {
             let sym = match tables::read_vlc(&mut self.r, subsampled) {
                 VlcRead::Sym(s) => s,
                 VlcRead::Eof => return Ok(None),
-                VlcRead::Invalid => bail!("code VLC chroma invalide au bit {}", self.r.bit_pos()),
+                VlcRead::Invalid => bail!("invalid chroma VLC code at bit {}", self.r.bit_pos()),
             };
             match sym {
                 Vlc::Eoc => {
@@ -452,7 +452,7 @@ impl<'a> Decoder<'a> {
                 Vlc::Level { level, extra: true } => {
                     let o = q + 1;
                     if o > max_e || last == o {
-                        bail!("élément extra chroma hors cluster (position {o})");
+                        bail!("chroma extra element outside cluster (position {o})");
                     }
                     self.stats.extra_elements += 1;
                     let pred = line[q];
@@ -470,7 +470,7 @@ impl<'a> Decoder<'a> {
                         (q + 1, None)
                     };
                     if t > max_e {
-                        bail!("cluster chroma au-delà de la ligne (position {t})");
+                        bail!("chroma cluster beyond the line (position {t})");
                     }
                     let pred = if omitted.is_some() { line[q] } else { line[t - 1] };
                     line[t] = clamp_c(pred as i16 + level);
@@ -484,13 +484,13 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Ligne PCM (Figure 6) : marqueurs 0xFF 0xFF, 256 octets de luminance,
-    /// 52 octets de chrominance (§1.5.5).
+    /// PCM line (Figure 6): markers 0xFF 0xFF, 256 luminance bytes, 52
+    /// chrominance bytes (§1.5.5).
     fn decode_pcm_line(&mut self, f: usize, l: usize) -> Result<bool> {
         self.r.read_bits(8); // 0xFF
         let Some(marker) = self.r.read_bits(8) else { return Ok(false) };
         if marker != 0xFF {
-            bail!("ligne PCM : adresse invalide 0xFF attendue, trouvé {marker:08b}");
+            bail!("PCM line: invalid address, 0xFF expected, found {marker:08b}");
         }
         self.stats.pcm_lines += 1;
         for e in 0..WIDTH {
@@ -502,21 +502,21 @@ impl<'a> Decoder<'a> {
             let Some(v) = self.r.read_bits(8) else { return Ok(false) };
             self.store[f].c[l][e] = v as u8;
         }
-        // Les lignes PCM sont non mobiles (§1.5.5).
+        // PCM lines are non-moving (§1.5.5).
         self.store[f].y_moving[l] = [false; WIDTH];
         self.store[f].c_moving[l] = [false; CHROMA_WIDTH];
         self.prev_not_trans = [false; WIDTH];
         Ok(true)
     }
 
-    /// Vrai si la position courante est un code de synchronisation
-    /// (≥ 12 zéros : aucun code VLC ni valeur PCM légale ne commence ainsi).
+    /// True if the current position is a synchronization code (≥ 12 zeros: no
+    /// VLC code nor legal PCM value starts that way).
     ///
-    /// En fin de flux il reste moins de 12 bits : ce sont soit les derniers
-    /// codes VLC de la dernière ligne, soit le bourrage de `BitWriter::finish`
-    /// (≤ 7 zéros). Un vrai mot de synchro ne tient pas dans ce reliquat, donc
-    /// on ne le considère terminé que si tous les bits restants sont nuls
-    /// (bourrage) ; sinon un code reste à lire et il ne faut pas l'abandonner.
+    /// At end of stream fewer than 12 bits remain: these are either the last
+    /// VLC codes of the last line, or the padding from `BitWriter::finish`
+    /// (≤ 7 zeros). A real sync word does not fit in that remainder, so we only
+    /// consider it terminated if all remaining bits are zero (padding);
+    /// otherwise a code is still to be read and must not be abandoned.
     fn at_sync(&mut self) -> bool {
         match self.r.peek_bits(12) {
             Some(v) => v == 0,

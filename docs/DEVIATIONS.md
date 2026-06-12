@@ -1,126 +1,122 @@
-# Choix d'implémentation et écarts par rapport à la Recommandation
+# Implementation choices and deviations from the Recommendation
 
-La Rec. H.120 spécifie strictement le bitstream et les reconstructions, mais
-laisse délibérément plusieurs blocs « au choix de l'implémenteur » (ils
-n'affectent pas l'interopérabilité). Ce document liste, exhaustivement, ce
-que cette implémentation a choisi — et les quelques points où elle s'écarte
-sciemment du document.
+Rec. H.120 strictly specifies the bitstream and the reconstructions, but
+deliberately leaves several blocks "to the implementer's choice" (they do not
+affect interoperability). This document lists, exhaustively, what this
+implementation has chosen — and the few points where it knowingly departs from
+the document.
 
-## 1. Périmètre
+## 1. Scope
 
-| Élément de la spec | Statut |
+| Spec element | Status |
 |---|---|
-| Clause 1 (625/50, 2048 kbit/s, conditional replenishment) | **Implémentée** |
-| Clause 2 (variante 525/60, 1544 kbit/s) | Non implémentée |
-| Clause 3 (codec à compensation de mouvement, 1988) | Non implémentée |
-| §1.6 Transmission (trame G.704/H.130, audio G.711, signalisation TS2) | Non implémentée (voir §2) |
-| §1.7 Correction d'erreurs BCH (4095, 4035) | Non implémentée |
-| Annexes A–D (mode graphique, chiffrement) | Non implémentées |
+| Clause 1 (625/50, 2048 kbit/s, conditional replenishment) | **Implemented** |
+| Clause 2 (525/60 variant, 1544 kbit/s) | Not implemented |
+| Clause 3 (motion-compensated codec, 1988) | Not implemented |
+| §1.6 Transmission (G.704/H.130 frame, G.711 audio, TS2 signalling) | Not implemented (see §2) |
+| §1.7 BCH error correction (4095, 4035) | Not implemented |
+| Annexes A–D (graphics mode, encryption) | Not implemented |
 
-## 2. Couche transmission absente
+## 2. Transmission layer absent
 
-Le fichier `.h120` contient le **multiplex vidéo seul** (sortie du « video
-multiplex coder », §1.5), pas la trame 2048 kbit/s complète. Raisons :
+The `.h120` file contains the **video multiplex alone** (output of the "video
+multiplex coder", §1.5), not the full 2048 kbit/s frame. Reasons:
 
-- la structure de trame est définie dans la Rec. H.130, document séparé ;
-  l'implémenter fidèlement sans cette référence serait de l'extrapolation ;
-- l'audio, la justification d'horloge et la signalisation codec-à-codec
-  n'ont pas de sens pour un codec travaillant sur fichiers.
+- the frame structure is defined in Rec. H.130, a separate document;
+  implementing it faithfully without that reference would be extrapolation;
+- audio, clock justification and codec-to-codec signalling make no sense for a
+  codec working on files.
 
-La contrainte de débit du canal reste simulée : le buffer de 96 kbit (§1.5.1)
-se vide au débit `--bitrate` (défaut 1600 kbit/s, approximation de la part
-vidéo d'un canal 2048 kbit/s après audio 64k, signalisation et trame). Les
-mécanismes pilotés par le buffer (bit A, sous-échantillonnages, lignes PCM)
-sont tous actifs.
+The channel rate constraint remains simulated: the 96 kbit buffer (§1.5.1)
+drains at the `--bitrate` rate (default 1600 kbit/s, an approximation of the
+video share of a 2048 kbit/s channel after 64k audio, signalling and framing).
+The buffer-driven mechanisms (A bit, subsampling, PCM lines) are all active.
 
-Conséquence : le bit 1 (justification d'horloge) et le bit 2 (état du buffer
-sur 8 bits multitrame) de TS2, transportés par la trame H.130, n'existent pas
-ici. L'état « buffer < 6 kbit » reste signalé par le bit A des FST, comme
-dans la spec.
+Consequence: TS2 bit 1 (clock justification) and bit 2 (8-bit multiframe buffer
+state), carried by the H.130 frame, do not exist here. The "buffer < 6 kbit"
+state remains signalled by the A bit of the FSTs, as in the spec.
 
-## 3. Blocs laissés libres par la spec — choix faits
+## 3. Blocks left free by the spec — choices made
 
-### Détecteur de mouvement (§1.4.1.3 : « It is not necessary to specify… »)
+### Motion detector (§1.4.1.3: "It is not necessary to specify…")
 
-Seuil sur |entrée − mémoire| par échantillon, durci linéairement avec
-l'occupation du buffer (de 4 à 18 niveaux). Les segments mobiles d'une ligne
-séparés de ≤ 6 échantillons sont fusionnés en un seul cluster (la spec impose
-de toute façon un écart minimal de 4 entre clusters).
+Threshold on |input − memory| per sample, hardened linearly with the buffer
+occupancy (from 4 to 18 levels). Moving segments of a line separated by
+≤ 6 samples are merged into a single cluster (the spec imposes a minimum gap of
+4 between clusters anyway).
 
-### Pré/post-filtres (§1.4.1.2 : caractéristiques non imposées)
+### Pre/post filters (§1.4.1.2: characteristics not imposed)
 
-Redimensionnement bilinéaire : l'image d'entrée est ramenée à 256×286
-(luminance) et 52×286 (chrominance), champ 1 = lignes paires, champ 2 =
-lignes impaires. Au décodage : tissage des deux champs, interpolation de la
-composante chroma absente de chaque ligne à partir des lignes voisines du
-même champ, sur-échantillonnage chroma 52 → 256. Pas de filtre temporel.
+Bilinear resizing: the input image is reduced to 256×286 (luminance) and
+52×286 (chrominance), field 1 = even lines, field 2 = odd lines. At decoding:
+weaving of the two fields, interpolation of the chroma component missing from
+each line from the neighbouring lines of the same field, chroma upsampling
+52 → 256. No temporal filter.
 
-### Rafraîchissement PCM (§1.5.5 : « systematic or forced updating »)
+### PCM refresh (§1.5.5: "systematic or forced updating")
 
-- au démarrage (mémoires à 128) : autant de lignes PCM par champ que le
-  buffer le permet (remplissage jusqu'à 70 %), d'où une image complète en
-  une seconde environ — la montée progressive de l'image est authentique ;
-- en régime établi : une ligne PCM par champ, en rotation, si l'occupation
-  est sous 45 % — l'image entière est rafraîchie en ~2,9 s.
+- at startup (memories at 128): as many PCM lines per field as the buffer
+  allows (filling up to 70 %), giving a full image in about one second — the
+  progressive build-up of the image is authentic;
+- in steady state: one PCM line per field, in rotation, if occupancy is below
+  45 % — the whole image is refreshed in ~2.9 s.
 
-### Contrôle de débit (Appendice I : principes seulement)
+### Rate control (Appendix I: principles only)
 
-Seuils d'occupation du buffer : sous-échantillonnage horizontal au-delà de
-55 %, omission du champ 2 au-delà de 72 %, lignes vides (« panique »)
-au-delà de 97 %. Les éléments extra sont émis sous 65 % d'occupation quand
-l'erreur d'interpolation atteint 12 niveaux. Seul le champ 2 est omis (la
-spec autorise l'un ou l'autre) ; le décodeur, lui, gère l'omission de
-n'importe quel champ.
+Buffer-occupancy thresholds: horizontal subsampling beyond 55 %, omission of
+field 2 beyond 72 %, empty ("panic") lines beyond 97 %. Extra elements are
+emitted below 65 % occupancy when the interpolation error reaches 12 levels.
+Only field 2 is omitted (the spec allows either); the decoder, on the other
+hand, handles the omission of any field.
 
-## 4. Écarts et interprétations assumés
+## 4. Assumed deviations and interpretations
 
-1. **Erratum Table 2** : le document imprime « 0 to 22 » pour le niveau +15,
-   ce qui chevauche la plage « 0 to +9 » du niveau +4. Lecture retenue :
-   « **10** to 22 ». De même « 1–5 » et « 1+4 » se lisent « −5 » et « +4 ».
+1. **Table 2 erratum**: the document prints "0 to 22" for level +15, which
+   overlaps the "0 to +9" range of level +4. Reading retained: "**10** to 22".
+   Likewise "1–5" and "1+4" read as "−5" and "+4".
 
-2. **Reconstructions DPCM bornées** : la spec interdit les mots PCM hors
-   16–239 mais ne dit pas comment borner `prédiction + niveau` ; les
-   reconstructions sont écrêtées à [16, 239] (luminance) et [17, 239]
-   (chrominance), identiquement à l'encodage et au décodage.
+2. **Bounded DPCM reconstructions**: the spec forbids PCM words outside
+   16–239 but does not say how to bound `prediction + level`; reconstructions
+   are clipped to [16, 239] (luminance) and [17, 239] (chrominance),
+   identically at encoding and decoding.
 
-3. **Flux toujours « couleur »** : en mode `--mono`, la chrominance est
-   neutralisée (128) mais les lignes PCM transportent toujours leurs
-   52 octets de chrominance. Un vrai flux monochrome (sans ces octets) ne
-   serait pas distinguable sans la signalisation hors-bande de H.130 ; le
-   décodeur suppose donc le format couleur.
+3. **Stream always "color"**: in `--mono` mode, chrominance is neutralized
+   (128) but PCM lines still carry their 52 chrominance bytes. A true
+   monochrome stream (without those bytes) would not be distinguishable
+   without the out-of-band H.130 signalling; the decoder therefore assumes the
+   color format.
 
-4. **Élément 255 jamais transmis en cluster** : la spec le force à 128 des
-   deux côtés (§1.4.1.1) ; l'encodeur termine ses clusters à l'élément 254
-   au plus, le décodeur force 128 après chaque ligne.
+4. **Element 255 never transmitted in a cluster**: the spec forces it to 128 on
+   both sides (§1.4.1.1); the encoder ends its clusters at element 254 at the
+   latest, the decoder forces 128 after each line.
 
-5. **Ordre extra/normal** : la spec ne précise pas explicitement la position
-   du code « extra » dans le flux ; il est émis ici en ordre spatial, entre
-   le code normal de l'élément à sa gauche et celui de l'élément à sa
-   droite, ce qui rend le décodage déterministe sans information annexe.
+5. **Extra/normal order**: the spec does not explicitly specify the position of
+   the "extra" code in the stream; it is emitted here in spatial order, between
+   the normal code of the element to its left and that of the element to its
+   right, which makes decoding deterministic without side information.
 
-6. **Numéro de ligne dans le quinconce** : « éléments pairs sur lignes
-   paires » est interprété avec le numéro de ligne de la spec (0–142 /
-   144–286) et, pour la chrominance, la parité de l'échantillon (égale à
-   celle de son adresse).
+6. **Line number in the quincunx**: "even elements on even lines" is
+   interpreted with the spec line number (0–142 / 144–286) and, for
+   chrominance, the parity of the sample (equal to that of its address).
 
-7. **Fin de flux** : un fichier se termine sans marqueur ; le décodeur traite
-   l'épuisement du flux comme une fin propre (la dernière image peut être
-   perdue si son champ 2 a été omis, l'interpolation nécessitant le champ
-   suivant).
+7. **End of stream**: a file ends without a marker; the decoder treats the
+   exhaustion of the stream as a clean end (the last frame may be lost if its
+   field 2 was omitted, the interpolation requiring the next field).
 
-8. **Délai décodeur** : la spec prévoit ~130 ms de latence (buffer canal) ;
-   sur fichier, cette latence n'existe pas, le lecteur joue dès que possible.
+8. **Decoder delay**: the spec provides for ~130 ms of latency (channel
+   buffer); on a file, that latency does not exist, the player plays as soon as
+   possible.
 
-## 5. Vérification
+## 5. Verification
 
-`cargo test` exécute notamment :
+`cargo test` runs in particular:
 
-- la conformité bit à bit des codes des Tables 1 et 2 aux chaînes imprimées
-  dans la spec, et la liberté de préfixe de l'ensemble codes + EOC ;
-- le **synchronisme bit à bit** des mémoires d'image encodeur/décodeur après
-  chaque image, en mode normal comme en mode sous-échantillonné (boucle
-  fermée — c'est la propriété fondamentale d'un codec DPCM) ;
-- l'exactitude du chemin PCM (une scène statique devient identique à
-  l'entrée après amorçage) ;
-- la tenue du contrôle de débit (le buffer de 96 kbit ne déborde jamais) et
-  la robustesse aux flux tronqués.
+- the bit-for-bit conformance of the codes of Tables 1 and 2 to the strings
+  printed in the spec, and the prefix-freeness of the set of codes + EOC;
+- the **bit-for-bit lockstep** of the encoder/decoder frame memories after each
+  frame, in normal mode as well as subsampled mode (closed loop — the
+  fundamental property of a DPCM codec);
+- the correctness of the PCM path (a static scene becomes identical to the
+  input after bootstrap);
+- that rate control holds (the 96 kbit buffer never overflows) and robustness
+  to truncated streams.
