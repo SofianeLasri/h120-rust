@@ -1,0 +1,88 @@
+# H.120 CI/CD.
+#
+# Two flows on a single self-hosted shell runner (no `tags:` — the runner
+# only accepts untagged jobs):
+#   * tests   -> every push to `main` and every SemVer tag
+#   * release -> only on a strict SemVer tag vX.Y.Z (build + GitLab release)
+#
+# Note: the crate's default `player` feature pulls in gtk4/libadwaita, which
+# need system GTK4 dev libraries the shell runner does not provide. The whole
+# pipeline therefore builds with `--no-default-features`, and releases ship
+# only the headless CLI binary `h120` (not the graphical `h120-play`).
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"'
+
+stages:
+  - test
+  - build
+  - release
+
+variables:
+  BINARY_NAME: h120
+  ASSET_NAME: "h120-${CI_COMMIT_TAG}-linux-x64"
+  PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${BINARY_NAME}/${CI_COMMIT_TAG}"
+
+test:
+  stage: test
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+  script:
+    - rustc --version
+    - cargo --version
+    - cargo build --no-default-features --locked
+    - cargo test --no-default-features --locked
+
+build:linux-x64:
+  stage: build
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+  script:
+    - rustc --version
+    - cargo --version
+    - cargo build --release --locked --no-default-features --bin "${BINARY_NAME}"
+    - mkdir -p dist
+    - cp "target/release/${BINARY_NAME}" "dist/${ASSET_NAME}"
+    - strip "dist/${ASSET_NAME}"
+    - ls -lh "dist/${ASSET_NAME}"
+  artifacts:
+    name: "${ASSET_NAME}"
+    paths:
+      - dist/${ASSET_NAME}
+    expire_in: 1 week
+
+release:
+  stage: release
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+  needs:
+    - job: build:linux-x64
+      artifacts: true
+  script:
+    - >
+      curl --fail --silent --show-error
+      --header "JOB-TOKEN: ${CI_JOB_TOKEN}"
+      --upload-file "dist/${ASSET_NAME}"
+      "${PACKAGE_REGISTRY_URL}/${ASSET_NAME}"
+    - >
+      curl --fail --silent --show-error
+      --request POST
+      --header "JOB-TOKEN: ${CI_JOB_TOKEN}"
+      --header "Content-Type: application/json"
+      --data "{
+        \"name\": \"Release ${CI_COMMIT_TAG}\",
+        \"tag_name\": \"${CI_COMMIT_TAG}\",
+        \"description\": \"Automatic build of tag ${CI_COMMIT_TAG} for Linux x64 (headless h120 CLI).\",
+        \"assets\": {
+          \"links\": [{
+            \"name\": \"${ASSET_NAME}\",
+            \"url\": \"${PACKAGE_REGISTRY_URL}/${ASSET_NAME}\",
+            \"link_type\": \"package\",
+            \"filepath\": \"/binaries/${ASSET_NAME}\"
+          }]
+        }
+      }"
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
