@@ -47,6 +47,21 @@ Pour ne compiler que le CLI (sans même avoir GTK installé) :
 cargo build --release --no-default-features
 ```
 
+### Windows
+
+Le CLI `h120` se compile directement sous Windows (toolchain MSVC), sans aucune
+dépendance en plus de Rust — et ffmpeg dans le `PATH` si l'on veut lire des
+formats autres que Y4M :
+
+```powershell
+cargo build --release --no-default-features
+```
+
+On obtient `target\release\h120.exe`. Le lecteur graphique `h120-play` n'est
+**pas compilé sous Windows** : il requiert les bibliothèques GTK4/libadwaita
+(par ex. via [gvsbuild](https://github.com/wingtk/gvsbuild)), hors périmètre
+ici — pour visionner un flux, décode-le en `.y4m` puis lis-le avec mpv/VLC.
+
 ## Utilisation
 
 ### Encoder une vidéo
